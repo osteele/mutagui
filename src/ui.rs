@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, ViewMode};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -19,7 +19,12 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(f.area());
 
     draw_header(f, app, chunks[0]);
-    draw_sessions(f, app, chunks[1]);
+
+    match app.view_mode {
+        ViewMode::Sessions => draw_sessions(f, app, chunks[1]),
+        ViewMode::Projects => draw_projects(f, app, chunks[1]),
+    }
+
     draw_status(f, app, chunks[2]);
     draw_help(f, app, chunks[3]);
 }
@@ -136,6 +141,92 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
+fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .projects
+        .iter()
+        .enumerate()
+        .map(|(i, project)| {
+            let status_icon = project.status_icon();
+            let status_color = if project.is_active() {
+                app.color_scheme.status_running_fg
+            } else {
+                app.color_scheme.status_paused_fg
+            };
+
+            let mut lines = Vec::new();
+
+            let file_path = project.file.path.display().to_string();
+            let short_path = if file_path.starts_with(&std::env::var("HOME").unwrap_or_default()) {
+                file_path.replace(&std::env::var("HOME").unwrap_or_default(), "~")
+            } else {
+                file_path
+            };
+
+            let header = Line::from(vec![
+                Span::styled(
+                    format!("{} ", status_icon),
+                    Style::default().fg(status_color),
+                ),
+                Span::styled(
+                    project.file.display_name(),
+                    Style::default().fg(app.color_scheme.session_name_fg).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("({})", short_path),
+                    Style::default().fg(app.color_scheme.session_status_fg),
+                ),
+            ]);
+            lines.push(header);
+
+            for session in &project.active_sessions {
+                let session_line = Line::from(vec![
+                    Span::raw("  └─ "),
+                    Span::styled(
+                        &session.name,
+                        Style::default().fg(app.color_scheme.session_alpha_fg),
+                    ),
+                    Span::raw(": "),
+                    Span::styled(
+                        &session.status,
+                        Style::default().fg(app.color_scheme.session_status_fg),
+                    ),
+                ]);
+                lines.push(session_line);
+            }
+
+            if project.active_sessions.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "(no running sessions)",
+                        Style::default().fg(app.color_scheme.session_status_fg),
+                    ),
+                ]));
+            }
+
+            let style = if i == app.selected_index {
+                Style::default()
+                    .bg(app.color_scheme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            ListItem::new(lines).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Projects ({} files)", app.projects.len())),
+    );
+
+    f.render_widget(list, area);
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let mut status_text = app
         .status_message
@@ -157,6 +248,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = Line::from(vec![
+        Span::styled("Tab", Style::default().fg(app.color_scheme.help_key_fg)),
+        Span::styled(" Toggle View | ", Style::default().fg(app.color_scheme.help_text_fg)),
         Span::styled("↑/↓", Style::default().fg(app.color_scheme.help_key_fg)),
         Span::styled(" Navigate | ", Style::default().fg(app.color_scheme.help_text_fg)),
         Span::styled("r", Style::default().fg(app.color_scheme.help_key_fg)),

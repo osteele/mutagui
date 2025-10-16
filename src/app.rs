@@ -1,38 +1,65 @@
 use crate::mutagen::{MutagenClient, SyncSession};
+use crate::project::{correlate_projects_with_sessions, discover_project_files, Project};
 use crate::theme::{detect_theme, ColorScheme};
 use anyhow::Result;
 use chrono::{DateTime, Local};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Sessions,
+    Projects,
+}
+
 pub struct App {
     pub sessions: Vec<SyncSession>,
+    pub projects: Vec<Project>,
     pub selected_index: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
     pub mutagen_client: MutagenClient,
     pub color_scheme: ColorScheme,
     pub last_refresh: Option<DateTime<Local>>,
+    pub view_mode: ViewMode,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
             sessions: Vec::new(),
+            projects: Vec::new(),
             selected_index: 0,
             should_quit: false,
             status_message: None,
             mutagen_client: MutagenClient::new(),
             color_scheme: detect_theme(),
             last_refresh: None,
+            view_mode: ViewMode::Sessions,
         }
     }
 
     pub async fn refresh_sessions(&mut self) -> Result<()> {
         match self.mutagen_client.list_sessions() {
             Ok(sessions) => {
-                self.sessions = sessions;
-                if self.selected_index >= self.sessions.len() && !self.sessions.is_empty() {
-                    self.selected_index = self.sessions.len() - 1;
+                self.sessions = sessions.clone();
+
+                match discover_project_files() {
+                    Ok(project_files) => {
+                        self.projects = correlate_projects_with_sessions(project_files, &sessions);
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to discover project files: {}", e);
+                    }
                 }
+
+                let item_count = match self.view_mode {
+                    ViewMode::Sessions => self.sessions.len(),
+                    ViewMode::Projects => self.projects.len(),
+                };
+
+                if self.selected_index >= item_count && item_count > 0 {
+                    self.selected_index = item_count - 1;
+                }
+
                 self.last_refresh = Some(Local::now());
                 self.status_message = Some("Sessions refreshed".to_string());
                 Ok(())
@@ -45,19 +72,37 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
-        if !self.sessions.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.sessions.len();
+        let item_count = match self.view_mode {
+            ViewMode::Sessions => self.sessions.len(),
+            ViewMode::Projects => self.projects.len(),
+        };
+
+        if item_count > 0 {
+            self.selected_index = (self.selected_index + 1) % item_count;
         }
     }
 
     pub fn select_previous(&mut self) {
-        if !self.sessions.is_empty() {
+        let item_count = match self.view_mode {
+            ViewMode::Sessions => self.sessions.len(),
+            ViewMode::Projects => self.projects.len(),
+        };
+
+        if item_count > 0 {
             if self.selected_index == 0 {
-                self.selected_index = self.sessions.len() - 1;
+                self.selected_index = item_count - 1;
             } else {
                 self.selected_index -= 1;
             }
         }
+    }
+
+    pub fn toggle_view(&mut self) {
+        self.view_mode = match self.view_mode {
+            ViewMode::Sessions => ViewMode::Projects,
+            ViewMode::Projects => ViewMode::Sessions,
+        };
+        self.selected_index = 0;
     }
 
     pub fn pause_selected(&mut self) {

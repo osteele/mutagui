@@ -1,5 +1,6 @@
 mod app;
 mod mutagen;
+mod project;
 mod theme;
 mod ui;
 
@@ -52,36 +53,47 @@ async fn run_app<B: ratatui::backend::Backend>(
         terminal.draw(|f| ui::draw(f, app))?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') => {
-                        app.quit();
+            match event::read()? {
+                Event::Key(key) => {
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            app.quit();
+                        }
+                        KeyCode::Tab => {
+                            app.toggle_view();
+                        }
+                        KeyCode::Char('r') => {
+                            app.refresh_sessions().await?;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.select_previous();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.select_next();
+                        }
+                        KeyCode::Char('p') => {
+                            app.pause_selected();
+                            app.refresh_sessions().await?;
+                        }
+                        KeyCode::Char('u') => {
+                            app.resume_selected();
+                            app.refresh_sessions().await?;
+                        }
+                        KeyCode::Char('t') => {
+                            app.terminate_selected();
+                        }
+                        KeyCode::Char('f') => {
+                            app.flush_selected();
+                            app.refresh_sessions().await?;
+                        }
+                        _ => {}
                     }
-                    KeyCode::Char('r') => {
-                        app.refresh_sessions().await?;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        app.select_previous();
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        app.select_next();
-                    }
-                    KeyCode::Char('p') => {
-                        app.pause_selected();
-                        app.refresh_sessions().await?;
-                    }
-                    KeyCode::Char('u') => {
-                        app.resume_selected();
-                        app.refresh_sessions().await?;
-                    }
-                    KeyCode::Char('t') => {
-                        app.terminate_selected();
-                    }
-                    KeyCode::Char('f') => {
-                        app.flush_selected();
-                        app.refresh_sessions().await?;
-                    }
-                    _ => {}
+                }
+                Event::Resize(_, _) => {
+                    // Terminal was resized, just redraw on next iteration
+                }
+                _ => {
+                    // Ignore other events (mouse, etc.)
                 }
             }
         } else if app.should_auto_refresh() {
