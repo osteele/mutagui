@@ -151,23 +151,46 @@ fn build_search_paths() -> Vec<String> {
     let mut paths = Vec::new();
     let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
 
+    // Current directory patterns
     paths.push(String::from("./mutagen.yml"));
     paths.push(String::from("./mutagen-*.yml"));
     paths.push(String::from("./.mutagen.yml"));
     paths.push(String::from("./.mutagen-*.yml"));
 
-    paths.push(String::from("./mutagen/mutagen.yml"));
-    paths.push(String::from("./.mutagen/mutagen.yml"));
-    paths.push(String::from("./config/mutagen.yml"));
-    paths.push(String::from("./conf/mutagen.yml"));
+    // Current directory subdirectories
+    paths.push(String::from("./mutagen/*.yml"));
+    paths.push(String::from("./.mutagen/*.yml"));
+    paths.push(String::from("./config/*.yml"));
+    paths.push(String::from("./conf/*.yml"));
 
-    paths.push(format!("{}/code/**/mutagen.yml", home));
-    paths.push(format!("{}/code/**/mutagen-*.yml", home));
-    paths.push(format!("{}/projects/**/mutagen.yml", home));
-    paths.push(format!("{}/projects/**/mutagen-*.yml", home));
-    paths.push(format!("{}/src/**/mutagen.yml", home));
-    paths.push(format!("{}/dev/**/mutagen.yml", home));
+    // Walk up directory tree looking for project subdirectories
+    if let Ok(current_dir) = std::env::current_dir() {
+        let mut dir = current_dir.as_path();
 
+        // Walk up to root or home
+        loop {
+            for subdir in &["mutagen", ".mutagen", "config", "conf"] {
+                let subdir_path = dir.join(subdir);
+                if subdir_path.is_dir() {
+                    if let Some(path_str) = subdir_path.to_str() {
+                        paths.push(format!("{}/*.yml", path_str));
+                    }
+                }
+            }
+
+            // Stop at filesystem root or home directory
+            if let Some(parent) = dir.parent() {
+                if parent == Path::new("/") || dir == Path::new(&home) {
+                    break;
+                }
+                dir = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    // User config directories
     paths.push(format!("{}/.config/mutagen/projects/*.yml", home));
     paths.push(format!("{}/.mutagen/projects/*.yml", home));
 
