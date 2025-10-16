@@ -1,0 +1,97 @@
+mod app;
+mod mutagen;
+mod theme;
+mod ui;
+
+use anyhow::Result;
+use app::App;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use std::io;
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = App::new();
+
+    let res = run_app(&mut terminal, &mut app).await;
+
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    if let Err(err) = res {
+        eprintln!("Error: {:?}", err);
+    }
+
+    Ok(())
+}
+
+async fn run_app<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> Result<()> {
+    app.refresh_sessions().await?;
+
+    loop {
+        terminal.draw(|f| ui::draw(f, app))?;
+
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        app.quit();
+                    }
+                    KeyCode::Char('r') => {
+                        app.refresh_sessions().await?;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.select_previous();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.select_next();
+                    }
+                    KeyCode::Char('p') => {
+                        app.pause_selected();
+                        app.refresh_sessions().await?;
+                    }
+                    KeyCode::Char('u') => {
+                        app.resume_selected();
+                        app.refresh_sessions().await?;
+                    }
+                    KeyCode::Char('t') => {
+                        app.terminate_selected();
+                    }
+                    KeyCode::Char('f') => {
+                        app.flush_selected();
+                        app.refresh_sessions().await?;
+                    }
+                    _ => {}
+                }
+            }
+        } else if app.should_auto_refresh() {
+            let _ = app.refresh_sessions().await;
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+
+    Ok(())
+}
