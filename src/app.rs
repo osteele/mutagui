@@ -3,6 +3,7 @@ use crate::project::{correlate_projects_with_sessions, discover_project_files, P
 use crate::theme::{detect_theme, ColorScheme};
 use anyhow::Result;
 use chrono::{DateTime, Local};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -20,10 +21,11 @@ pub struct App {
     pub color_scheme: ColorScheme,
     pub last_refresh: Option<DateTime<Local>>,
     pub view_mode: ViewMode,
+    pub project_dir: Option<PathBuf>,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(project_dir: Option<PathBuf>) -> Self {
         Self {
             sessions: Vec::new(),
             projects: Vec::new(),
@@ -34,6 +36,7 @@ impl App {
             color_scheme: detect_theme(),
             last_refresh: None,
             view_mode: ViewMode::Sessions,
+            project_dir,
         }
     }
 
@@ -42,7 +45,7 @@ impl App {
             Ok(sessions) => {
                 self.sessions = sessions.clone();
 
-                match discover_project_files() {
+                match discover_project_files(self.project_dir.as_deref()) {
                     Ok(project_files) => {
                         self.projects = correlate_projects_with_sessions(project_files, &sessions);
                     }

@@ -6,6 +6,7 @@ mod ui;
 
 use anyhow::Result;
 use app::App;
+use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -13,10 +14,22 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
+
+#[derive(Parser, Debug)]
+#[command(name = "mutagen-tui")]
+#[command(about = "Terminal UI for managing Mutagen sync sessions", long_about = None)]
+struct Cli {
+    /// Directory to search for mutagen project files (default: current directory)
+    #[arg(short = 'd', long, value_name = "DIR")]
+    project_dir: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -24,7 +37,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new();
+    let mut app = App::new(cli.project_dir);
 
     let res = run_app(&mut terminal, &mut app).await;
 

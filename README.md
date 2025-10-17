@@ -57,6 +57,35 @@ Or if building locally:
 just run
 ```
 
+### Command-Line Options
+
+```bash
+mutagen-tui [OPTIONS]
+
+Options:
+  -d, --project-dir <DIR>    Directory to search for mutagen project files
+                             (default: current directory)
+  -h, --help                 Print help
+```
+
+**Examples:**
+
+```bash
+# Use current directory (default)
+mutagen-tui
+
+# Search for projects starting from ~/code
+mutagen-tui --project-dir ~/code
+
+# Short form
+mutagen-tui -d ~/projects
+```
+
+The `--project-dir` option specifies where to start searching for `mutagen.yml` files. The application will:
+- Search the specified directory and its subdirectories
+- Walk up the directory tree to find project configuration directories
+- Still check user config directories (`~/.config/mutagen/projects/`, `~/.mutagen/projects/`)
+
 ### Keyboard Controls
 
 | Key | Action |
@@ -154,6 +183,7 @@ The application is structured into several modules:
 - **serde**: Serialization framework (JSON)
 - **serde_yaml**: YAML parsing for mutagen.yml files
 - **glob**: Pattern matching for file discovery
+- **clap**: Command-line argument parsing
 - **anyhow**: Error handling
 - **chrono**: Date and time handling
 - **terminal-light**: Terminal background detection for theme adaptation
@@ -168,17 +198,22 @@ The application is structured into several modules:
 
 ### Project File Discovery
 
-The application searches for `mutagen.yml` files in:
-- Current directory and subdirectories (`./mutagen.yml`, `./.mutagen/mutagen.yml`, `./config/mutagen.yml`)
-- Common workspace directories (`~/code/**`, `~/projects/**`, `~/src/**`, `~/dev/**`)
-- User config directories (`~/.config/mutagen/projects/`, `~/.mutagen/projects/`)
+The application searches for `mutagen.yml` files starting from the current directory (or the directory specified with `--project-dir`):
 
-It supports multiple naming patterns:
+**Search locations:**
+- Base directory: `mutagen.yml`, `mutagen-*.yml`, `.mutagen.yml`, `.mutagen-*.yml`
+- Subdirectories: `mutagen/*.yml`, `.mutagen/*.yml`, `config/*.yml`, `conf/*.yml`
+- Parent directories: Walks up to filesystem root or home, checking for `mutagen/`, `.mutagen/`, `config/`, `conf/` subdirectories
+- User config: `~/.config/mutagen/projects/*.yml`, `~/.mutagen/projects/*.yml`
+
+**Supported naming patterns:**
 - `mutagen.yml` - Standard project file
 - `mutagen-<target>.yml` - Target-specific configurations (e.g., `mutagen-studio.yml`, `mutagen-cool30.yml`)
 - `.mutagen.yml` and `.mutagen-<target>.yml` - Hidden variants
 
 This allows you to have multiple Mutagen configurations in the same directory for different sync targets.
+
+**Performance:** The search uses non-recursive patterns for fast startup. No `**/` glob patterns are used to avoid scanning thousands of files.
 
 ## License
 

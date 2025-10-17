@@ -120,9 +120,9 @@ impl Project {
     }
 }
 
-pub fn discover_project_files() -> Result<Vec<ProjectFile>> {
+pub fn discover_project_files(base_dir: Option<&Path>) -> Result<Vec<ProjectFile>> {
     let mut files = Vec::new();
-    let search_paths = build_search_paths();
+    let search_paths = build_search_paths(base_dir);
 
     for pattern in search_paths {
         match glob(&pattern) {
@@ -147,46 +147,55 @@ pub fn discover_project_files() -> Result<Vec<ProjectFile>> {
     Ok(files)
 }
 
-fn build_search_paths() -> Vec<String> {
+fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
     let mut paths = Vec::new();
     let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
 
-    // Current directory patterns
-    paths.push(String::from("./mutagen.yml"));
-    paths.push(String::from("./mutagen-*.yml"));
-    paths.push(String::from("./.mutagen.yml"));
-    paths.push(String::from("./.mutagen-*.yml"));
+    let start_dir = base_dir.unwrap_or_else(|| Path::new("."));
+    let start_dir_str = start_dir.to_str().unwrap_or(".");
 
-    // Current directory subdirectories
-    paths.push(String::from("./mutagen/*.yml"));
-    paths.push(String::from("./.mutagen/*.yml"));
-    paths.push(String::from("./config/*.yml"));
-    paths.push(String::from("./conf/*.yml"));
+    // Base directory patterns
+    paths.push(format!("{}/mutagen.yml", start_dir_str));
+    paths.push(format!("{}/mutagen-*.yml", start_dir_str));
+    paths.push(format!("{}/.mutagen.yml", start_dir_str));
+    paths.push(format!("{}/.mutagen-*.yml", start_dir_str));
+
+    // Base directory subdirectories
+    paths.push(format!("{}/mutagen/*.yml", start_dir_str));
+    paths.push(format!("{}/.mutagen/*.yml", start_dir_str));
+    paths.push(format!("{}/config/*.yml", start_dir_str));
+    paths.push(format!("{}/conf/*.yml", start_dir_str));
 
     // Walk up directory tree looking for project subdirectories
-    if let Ok(current_dir) = std::env::current_dir() {
-        let mut dir = current_dir.as_path();
+    let walk_start = if let Some(base) = base_dir {
+        base.to_path_buf()
+    } else if let Ok(current_dir) = std::env::current_dir() {
+        current_dir
+    } else {
+        return paths;
+    };
 
-        // Walk up to root or home
-        loop {
-            for subdir in &["mutagen", ".mutagen", "config", "conf"] {
-                let subdir_path = dir.join(subdir);
-                if subdir_path.is_dir() {
-                    if let Some(path_str) = subdir_path.to_str() {
-                        paths.push(format!("{}/*.yml", path_str));
-                    }
+    let mut dir = walk_start.as_path();
+
+    // Walk up to root or home
+    loop {
+        for subdir in &["mutagen", ".mutagen", "config", "conf"] {
+            let subdir_path = dir.join(subdir);
+            if subdir_path.is_dir() {
+                if let Some(path_str) = subdir_path.to_str() {
+                    paths.push(format!("{}/*.yml", path_str));
                 }
             }
+        }
 
-            // Stop at filesystem root or home directory
-            if let Some(parent) = dir.parent() {
-                if parent == Path::new("/") || dir == Path::new(&home) {
-                    break;
-                }
-                dir = parent;
-            } else {
+        // Stop at filesystem root or home directory
+        if let Some(parent) = dir.parent() {
+            if parent == Path::new("/") || dir == Path::new(&home) {
                 break;
             }
+            dir = parent;
+        } else {
+            break;
         }
     }
 
