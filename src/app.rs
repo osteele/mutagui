@@ -5,12 +5,6 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode {
-    Sessions,
-    Projects,
-}
-
 pub struct App {
     pub sessions: Vec<SyncSession>,
     pub projects: Vec<Project>,
@@ -20,7 +14,6 @@ pub struct App {
     pub mutagen_client: MutagenClient,
     pub color_scheme: ColorScheme,
     pub last_refresh: Option<DateTime<Local>>,
-    pub view_mode: ViewMode,
     pub project_dir: Option<PathBuf>,
 }
 
@@ -35,7 +28,6 @@ impl App {
             mutagen_client: MutagenClient::new(),
             color_scheme: detect_theme(),
             last_refresh: None,
-            view_mode: ViewMode::Sessions,
             project_dir,
         }
     }
@@ -54,13 +46,9 @@ impl App {
                     }
                 }
 
-                let item_count = match self.view_mode {
-                    ViewMode::Sessions => self.sessions.len(),
-                    ViewMode::Projects => self.projects.len(),
-                };
-
-                if self.selected_index >= item_count && item_count > 0 {
-                    self.selected_index = item_count - 1;
+                let total_items = self.sessions.len() + self.projects.len();
+                if self.selected_index >= total_items && total_items > 0 {
+                    self.selected_index = total_items - 1;
                 }
 
                 self.last_refresh = Some(Local::now());
@@ -75,90 +63,91 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
-        let item_count = match self.view_mode {
-            ViewMode::Sessions => self.sessions.len(),
-            ViewMode::Projects => self.projects.len(),
-        };
-
-        if item_count > 0 {
-            self.selected_index = (self.selected_index + 1) % item_count;
+        let total_items = self.sessions.len() + self.projects.len();
+        if total_items > 0 {
+            self.selected_index = (self.selected_index + 1) % total_items;
         }
     }
 
     pub fn select_previous(&mut self) {
-        let item_count = match self.view_mode {
-            ViewMode::Sessions => self.sessions.len(),
-            ViewMode::Projects => self.projects.len(),
-        };
-
-        if item_count > 0 {
+        let total_items = self.sessions.len() + self.projects.len();
+        if total_items > 0 {
             if self.selected_index == 0 {
-                self.selected_index = item_count - 1;
+                self.selected_index = total_items - 1;
             } else {
                 self.selected_index -= 1;
             }
         }
     }
 
-    pub fn toggle_view(&mut self) {
-        self.view_mode = match self.view_mode {
-            ViewMode::Sessions => ViewMode::Projects,
-            ViewMode::Projects => ViewMode::Sessions,
-        };
-        self.selected_index = 0;
+    fn get_selected_session_index(&self) -> Option<usize> {
+        if self.selected_index < self.sessions.len() {
+            Some(self.selected_index)
+        } else {
+            None
+        }
     }
 
     pub fn pause_selected(&mut self) {
-        if let Some(session) = self.sessions.get(self.selected_index) {
-            match self.mutagen_client.pause_session(&session.identifier) {
-                Ok(_) => {
-                    self.status_message = Some(format!("Paused session: {}", session.name));
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Failed to pause: {}", e));
+        if let Some(idx) = self.get_selected_session_index() {
+            if let Some(session) = self.sessions.get(idx) {
+                match self.mutagen_client.pause_session(&session.identifier) {
+                    Ok(_) => {
+                        self.status_message = Some(format!("Paused session: {}", session.name));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to pause: {}", e));
+                    }
                 }
             }
         }
     }
 
     pub fn resume_selected(&mut self) {
-        if let Some(session) = self.sessions.get(self.selected_index) {
-            match self.mutagen_client.resume_session(&session.identifier) {
-                Ok(_) => {
-                    self.status_message = Some(format!("Resumed session: {}", session.name));
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Failed to resume: {}", e));
+        if let Some(idx) = self.get_selected_session_index() {
+            if let Some(session) = self.sessions.get(idx) {
+                match self.mutagen_client.resume_session(&session.identifier) {
+                    Ok(_) => {
+                        self.status_message = Some(format!("Resumed session: {}", session.name));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to resume: {}", e));
+                    }
                 }
             }
         }
     }
 
     pub fn terminate_selected(&mut self) {
-        if let Some(session) = self.sessions.get(self.selected_index) {
-            match self.mutagen_client.terminate_session(&session.identifier) {
-                Ok(_) => {
-                    self.status_message = Some(format!("Terminated session: {}", session.name));
-                    self.sessions.remove(self.selected_index);
-                    if self.selected_index >= self.sessions.len() && !self.sessions.is_empty() {
-                        self.selected_index = self.sessions.len() - 1;
+        if let Some(idx) = self.get_selected_session_index() {
+            if let Some(session) = self.sessions.get(idx) {
+                match self.mutagen_client.terminate_session(&session.identifier) {
+                    Ok(_) => {
+                        self.status_message = Some(format!("Terminated session: {}", session.name));
+                        self.sessions.remove(idx);
+                        let total_items = self.sessions.len() + self.projects.len();
+                        if self.selected_index >= total_items && total_items > 0 {
+                            self.selected_index = total_items - 1;
+                        }
                     }
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Failed to terminate: {}", e));
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to terminate: {}", e));
+                    }
                 }
             }
         }
     }
 
     pub fn flush_selected(&mut self) {
-        if let Some(session) = self.sessions.get(self.selected_index) {
-            match self.mutagen_client.flush_session(&session.identifier) {
-                Ok(_) => {
-                    self.status_message = Some(format!("Flushed session: {}", session.name));
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Failed to flush: {}", e));
+        if let Some(idx) = self.get_selected_session_index() {
+            if let Some(session) = self.sessions.get(idx) {
+                match self.mutagen_client.flush_session(&session.identifier) {
+                    Ok(_) => {
+                        self.status_message = Some(format!("Flushed session: {}", session.name));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to flush: {}", e));
+                    }
                 }
             }
         }

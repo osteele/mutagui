@@ -1,4 +1,4 @@
-use crate::app::{App, ViewMode};
+use crate::app::App;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -20,13 +20,59 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_header(f, app, chunks[0]);
 
-    match app.view_mode {
-        ViewMode::Sessions => draw_sessions(f, app, chunks[1]),
-        ViewMode::Projects => draw_projects(f, app, chunks[1]),
+    if app.sessions.is_empty() && app.projects.is_empty() {
+        draw_empty_state(f, app, chunks[1]);
+    } else {
+        let mut constraints = Vec::new();
+        if !app.sessions.is_empty() {
+            constraints.push(Constraint::Percentage(50));
+        }
+        if !app.projects.is_empty() {
+            constraints.push(Constraint::Percentage(50));
+        }
+
+        let content_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(chunks[1]);
+
+        let mut chunk_idx = 0;
+        if !app.sessions.is_empty() {
+            draw_sessions(f, app, content_chunks[chunk_idx]);
+            chunk_idx += 1;
+        }
+        if !app.projects.is_empty() {
+            draw_projects(f, app, content_chunks[chunk_idx]);
+        }
     }
 
     draw_status(f, app, chunks[2]);
     draw_help(f, app, chunks[3]);
+}
+
+fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
+    let message = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "No Mutagen sessions or projects found",
+            Style::default()
+                .fg(app.color_scheme.session_status_fg)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "• Start a new session with: mutagen sync create",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        )),
+        Line::from(Span::styled(
+            "• Or create a mutagen.yml file in your project directory",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        )),
+    ])
+    .block(Block::default().borders(Borders::ALL).title("Welcome"))
+    .style(Style::default());
+
+    f.render_widget(message, area);
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -63,7 +109,9 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(
                     format!("{:<18}", session.name),
-                    Style::default().fg(app.color_scheme.session_name_fg).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(app.color_scheme.session_name_fg)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
                 Span::styled(
@@ -120,7 +168,8 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
 
             let content = Line::from(spans);
 
-            let style = if i == app.selected_index {
+            let is_selected = i == app.selected_index;
+            let style = if is_selected {
                 Style::default()
                     .bg(app.color_scheme.selection_bg)
                     .add_modifier(Modifier::BOLD)
@@ -142,6 +191,8 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
+    let project_index_offset = app.sessions.len();
+
     let items: Vec<ListItem> = app
         .projects
         .iter()
@@ -170,7 +221,9 @@ fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(
                     project.file.display_name(),
-                    Style::default().fg(app.color_scheme.session_name_fg).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(app.color_scheme.session_name_fg)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
                 Span::styled(
@@ -206,7 +259,8 @@ fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
                 ]));
             }
 
-            let style = if i == app.selected_index {
+            let is_selected = project_index_offset + i == app.selected_index;
+            let style = if is_selected {
                 Style::default()
                     .bg(app.color_scheme.selection_bg)
                     .add_modifier(Modifier::BOLD)
@@ -248,26 +302,42 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = Line::from(vec![
-        Span::styled("Tab", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Toggle View | ", Style::default().fg(app.color_scheme.help_text_fg)),
         Span::styled("↑/↓", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Navigate | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Navigate | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("r", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Refresh | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Refresh | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("p", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Pause | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Pause | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("u", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Resume | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Resume | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("f", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Flush | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Flush | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("t", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Terminate | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Terminate | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("q", Style::default().fg(app.color_scheme.help_key_fg)),
         Span::styled(" Quit", Style::default().fg(app.color_scheme.help_text_fg)),
     ]);
 
-    let help = Paragraph::new(help_text)
-        .block(Block::default().borders(Borders::ALL).title("Help"));
+    let help =
+        Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"));
 
     f.render_widget(help, area);
 }

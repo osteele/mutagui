@@ -39,9 +39,9 @@ impl ColorScheme {
             session_alpha_fg: Color::DarkGray,
             session_beta_fg: Color::Rgb(128, 0, 128), // Purple
             session_status_fg: Color::Rgb(64, 64, 64), // Dark gray
-            status_running_fg: Color::Rgb(0, 128, 0),  // Dark green
+            status_running_fg: Color::Rgb(0, 128, 0), // Dark green
             status_paused_fg: Color::Rgb(184, 134, 11), // Dark goldenrod
-            selection_bg: Color::Rgb(200, 200, 200),   // Light gray
+            selection_bg: Color::Rgb(200, 200, 200),  // Light gray
             status_message_fg: Color::Rgb(184, 134, 11), // Dark goldenrod
             help_key_fg: Color::Blue,
             help_text_fg: Color::Black,
@@ -51,14 +51,8 @@ impl ColorScheme {
 
 pub fn detect_theme() -> ColorScheme {
     match terminal_light::luma() {
-        Ok(luma) if luma > 0.6 => {
-            ColorScheme::light()
-        }
-        Ok(_) => {
-            ColorScheme::dark()
-        }
-        Err(_) => {
-            ColorScheme::dark()
-        }
+        Ok(luma) if luma > 0.6 => ColorScheme::light(),
+        Ok(_) => ColorScheme::dark(),
+        Err(_) => ColorScheme::dark(),
     }
 }

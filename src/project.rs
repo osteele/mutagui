@@ -49,14 +49,14 @@ impl ProjectFile {
 
         let sessions = yml
             .sync
-            .and_then(|sync| {
+            .map(|sync| {
                 let mut filtered = HashMap::new();
                 for (key, value) in sync.sessions {
                     if key != "defaults" {
                         filtered.insert(key, value);
                     }
                 }
-                Some(filtered)
+                filtered
             })
             .unwrap_or_default();
 
@@ -81,23 +81,21 @@ impl ProjectFile {
 }
 
 fn extract_target_name(path: &Path) -> Option<String> {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|name| {
-            if name.starts_with("mutagen-") && name.ends_with(".yml") {
-                let target = name
-                    .strip_prefix("mutagen-")
-                    .and_then(|s| s.strip_suffix(".yml"));
-                target.map(String::from)
-            } else if name.starts_with(".mutagen-") && name.ends_with(".yml") {
-                let target = name
-                    .strip_prefix(".mutagen-")
-                    .and_then(|s| s.strip_suffix(".yml"));
-                target.map(String::from)
-            } else {
-                None
-            }
-        })
+    path.file_name().and_then(|n| n.to_str()).and_then(|name| {
+        if name.starts_with("mutagen-") && name.ends_with(".yml") {
+            let target = name
+                .strip_prefix("mutagen-")
+                .and_then(|s| s.strip_suffix(".yml"));
+            target.map(String::from)
+        } else if name.starts_with(".mutagen-") && name.ends_with(".yml") {
+            let target = name
+                .strip_prefix(".mutagen-")
+                .and_then(|s| s.strip_suffix(".yml"));
+            target.map(String::from)
+        } else {
+            None
+        }
+    })
 }
 
 #[derive(Debug, Clone)]

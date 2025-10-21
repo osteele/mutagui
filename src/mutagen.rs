@@ -98,8 +98,7 @@ impl MutagenClient {
         let sessions: Vec<SyncSession> = if stdout.trim().is_empty() {
             Vec::new()
         } else {
-            serde_json::from_str(&stdout)
-                .context("Failed to parse mutagen output")?
+            serde_json::from_str(&stdout).context("Failed to parse mutagen output")?
         };
 
         Ok(sessions)
