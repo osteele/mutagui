@@ -36,7 +36,7 @@ impl App {
             color_scheme: detect_theme(),
             last_refresh: None,
             project_dir,
-            session_display_mode: SessionDisplayMode::ShowPaths,
+            session_display_mode: SessionDisplayMode::ShowLastRefresh,
         }
     }
 

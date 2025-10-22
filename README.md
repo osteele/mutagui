@@ -34,7 +34,7 @@ A terminal user interface for managing [Mutagen](https://mutagen.io/) sync sessi
 
 ```bash
 # Clone or navigate to the repository
-cd mutagen-tui
+cd mutagen-gui
 
 # Build and install
 just install
@@ -48,7 +48,7 @@ cargo install --path .
 Simply run the application:
 
 ```bash
-mutagen-tui
+mutagui
 ```
 
 Or if building locally:
@@ -60,7 +60,7 @@ just run
 ### Command-Line Options
 
 ```bash
-mutagen-tui [OPTIONS]
+mutagui [OPTIONS]
 
 Options:
   -d, --project-dir <DIR>    Directory to search for mutagen project files
@@ -72,13 +72,13 @@ Options:
 
 ```bash
 # Use current directory (default)
-mutagen-tui
+mutagui
 
 # Search for projects starting from ~/code
-mutagen-tui --project-dir ~/code
+mutagui --project-dir ~/code
 
 # Short form
-mutagen-tui -d ~/projects
+mutagui -d ~/projects
 ```
 
 The `--project-dir` option specifies where to start searching for `mutagen.yml` files. The application will:

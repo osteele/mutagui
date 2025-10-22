@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
-#[command(name = "mutagen-tui")]
+#[command(name = "mutagui")]
 #[command(about = "Terminal UI for managing Mutagen sync sessions", long_about = None)]
 struct Cli {
     /// Directory to search for mutagen project files (default: current directory)

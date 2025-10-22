@@ -120,6 +120,7 @@ impl Project {
 
 pub fn discover_project_files(base_dir: Option<&Path>) -> Result<Vec<ProjectFile>> {
     let mut files = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
     let search_paths = build_search_paths(base_dir);
 
     for pattern in search_paths {
@@ -127,10 +128,20 @@ pub fn discover_project_files(base_dir: Option<&Path>) -> Result<Vec<ProjectFile
             Ok(paths) => {
                 for entry in paths.flatten() {
                     if entry.is_file() {
-                        match ProjectFile::from_path(entry.clone()) {
-                            Ok(project_file) => files.push(project_file),
-                            Err(e) => {
-                                eprintln!("Warning: Failed to parse {}: {}", entry.display(), e);
+                        // Canonicalize path to avoid duplicates from symlinks or different representations
+                        let canonical_path = entry.canonicalize().unwrap_or_else(|_| entry.clone());
+
+                        if !seen_paths.contains(&canonical_path) {
+                            seen_paths.insert(canonical_path.clone());
+                            match ProjectFile::from_path(entry.clone()) {
+                                Ok(project_file) => files.push(project_file),
+                                Err(e) => {
+                                    eprintln!(
+                                        "Warning: Failed to parse {}: {}",
+                                        entry.display(),
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
@@ -162,7 +173,9 @@ fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
     paths.push(format!("{}/mutagen/*.yml", start_dir_str));
     paths.push(format!("{}/.mutagen/*.yml", start_dir_str));
     paths.push(format!("{}/config/*.yml", start_dir_str));
+    paths.push(format!("{}/config/mutagen/*.yml", start_dir_str));
     paths.push(format!("{}/conf/*.yml", start_dir_str));
+    paths.push(format!("{}/conf/mutagen/*.yml", start_dir_str));
 
     // Walk up directory tree looking for project subdirectories
     let walk_start = if let Some(base) = base_dir {
