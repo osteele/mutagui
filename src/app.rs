@@ -5,6 +5,12 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionDisplayMode {
+    ShowPaths,
+    ShowLastRefresh,
+}
+
 pub struct App {
     pub sessions: Vec<SyncSession>,
     pub projects: Vec<Project>,
@@ -15,6 +21,7 @@ pub struct App {
     pub color_scheme: ColorScheme,
     pub last_refresh: Option<DateTime<Local>>,
     pub project_dir: Option<PathBuf>,
+    pub session_display_mode: SessionDisplayMode,
 }
 
 impl App {
@@ -29,17 +36,48 @@ impl App {
             color_scheme: detect_theme(),
             last_refresh: None,
             project_dir,
+            session_display_mode: SessionDisplayMode::ShowPaths,
         }
     }
 
     pub async fn refresh_sessions(&mut self) -> Result<()> {
         match self.mutagen_client.list_sessions() {
             Ok(sessions) => {
-                self.sessions = sessions.clone();
+                let now = Local::now();
+
+                // Track when successfulCycles changes to detect actual sync activity
+                let new_sessions: Vec<_> = sessions
+                    .into_iter()
+                    .map(|mut new_session| {
+                        // Find the previous version of this session
+                        if let Some(old_session) = self
+                            .sessions
+                            .iter()
+                            .find(|s| s.identifier == new_session.identifier)
+                        {
+                            // If successfulCycles increased, update last_sync_time
+                            if new_session.successful_cycles > old_session.successful_cycles {
+                                new_session.last_sync_time = Some(now);
+                            } else {
+                                // Keep the previous last_sync_time
+                                new_session.last_sync_time = old_session.last_sync_time;
+                            }
+                        } else {
+                            // New session - set last_sync_time if it has already synced
+                            if new_session.successful_cycles > 0 {
+                                new_session.last_sync_time = Some(now);
+                            }
+                        }
+                        new_session
+                    })
+                    .collect();
+
+                self.sessions = new_sessions;
 
                 match discover_project_files(self.project_dir.as_deref()) {
                     Ok(project_files) => {
-                        self.projects = correlate_projects_with_sessions(project_files, &sessions);
+                        self.projects =
+                            correlate_projects_with_sessions(project_files, &self.sessions);
                     }
                     Err(e) => {
                         eprintln!("Warning: Failed to discover project files: {}", e);
@@ -155,6 +193,20 @@ impl App {
 
     pub fn quit(&mut self) {
         self.should_quit = true;
+    }
+
+    pub fn toggle_session_display(&mut self) {
+        self.session_display_mode = match self.session_display_mode {
+            SessionDisplayMode::ShowPaths => SessionDisplayMode::ShowLastRefresh,
+            SessionDisplayMode::ShowLastRefresh => SessionDisplayMode::ShowPaths,
+        };
+        self.status_message = Some(format!(
+            "Display mode: {}",
+            match self.session_display_mode {
+                SessionDisplayMode::ShowPaths => "Paths",
+                SessionDisplayMode::ShowLastRefresh => "Last Sync Time",
+            }
+        ));
     }
 
     pub fn should_auto_refresh(&self) -> bool {

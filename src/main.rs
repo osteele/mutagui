@@ -74,6 +74,9 @@ async fn run_app<B: ratatui::backend::Backend>(
                     KeyCode::Char('r') => {
                         app.refresh_sessions().await?;
                     }
+                    KeyCode::Char('s') => {
+                        app.toggle_session_display();
+                    }
                     KeyCode::Up | KeyCode::Char('k') => {
                         app.select_previous();
                     }

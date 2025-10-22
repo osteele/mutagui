@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, SessionDisplayMode};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -99,9 +99,6 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 app.color_scheme.status_running_fg
             };
 
-            let alpha_stats = session.alpha.stats_display();
-            let beta_stats = session.beta.stats_display();
-
             let mut spans = vec![
                 Span::styled(
                     format!("{} ", status_icon),
@@ -114,52 +111,66 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(
-                    session.alpha.status_icon(),
-                    Style::default().fg(if session.alpha.connected {
-                        app.color_scheme.status_running_fg
-                    } else {
-                        app.color_scheme.status_paused_fg
-                    }),
-                ),
-                Span::styled(
-                    format!("{:<25}", session.alpha_display()),
-                    Style::default().fg(app.color_scheme.session_alpha_fg),
-                ),
             ];
 
-            if !alpha_stats.is_empty() {
-                spans.push(Span::styled(
-                    format!("({}) ", alpha_stats),
-                    Style::default().fg(app.color_scheme.session_status_fg),
-                ));
+            match app.session_display_mode {
+                SessionDisplayMode::ShowPaths => {
+                    let alpha_stats = session.alpha.stats_display();
+                    let beta_stats = session.beta.stats_display();
+
+                    spans.push(Span::styled(
+                        session.alpha.status_icon(),
+                        Style::default().fg(if session.alpha.connected {
+                            app.color_scheme.status_running_fg
+                        } else {
+                            app.color_scheme.status_paused_fg
+                        }),
+                    ));
+                    spans.push(Span::styled(
+                        format!("{:<25}", session.alpha_display()),
+                        Style::default().fg(app.color_scheme.session_alpha_fg),
+                    ));
+
+                    if !alpha_stats.is_empty() {
+                        spans.push(Span::styled(
+                            format!("({}) ", alpha_stats),
+                            Style::default().fg(app.color_scheme.session_status_fg),
+                        ));
+                    }
+
+                    spans.extend(vec![
+                        Span::raw("⇄ "),
+                        Span::styled(
+                            session.beta.status_icon(),
+                            Style::default().fg(if session.beta.connected {
+                                app.color_scheme.status_running_fg
+                            } else {
+                                app.color_scheme.status_paused_fg
+                            }),
+                        ),
+                        Span::styled(
+                            format!("{:<25}", session.beta_display()),
+                            Style::default().fg(app.color_scheme.session_beta_fg),
+                        ),
+                    ]);
+
+                    if !beta_stats.is_empty() {
+                        spans.push(Span::styled(
+                            format!("({}) ", beta_stats),
+                            Style::default().fg(app.color_scheme.session_status_fg),
+                        ));
+                    }
+                }
+                SessionDisplayMode::ShowLastRefresh => {
+                    spans.push(Span::styled(
+                        format!("Last synced: {}", session.time_ago_display()),
+                        Style::default().fg(app.color_scheme.session_status_fg),
+                    ));
+                }
             }
 
             spans.extend(vec![
-                Span::raw("⇄ "),
-                Span::styled(
-                    session.beta.status_icon(),
-                    Style::default().fg(if session.beta.connected {
-                        app.color_scheme.status_running_fg
-                    } else {
-                        app.color_scheme.status_paused_fg
-                    }),
-                ),
-                Span::styled(
-                    format!("{:<25}", session.beta_display()),
-                    Style::default().fg(app.color_scheme.session_beta_fg),
-                ),
-            ]);
-
-            if !beta_stats.is_empty() {
-                spans.push(Span::styled(
-                    format!("({}) ", beta_stats),
-                    Style::default().fg(app.color_scheme.session_status_fg),
-                ));
-            }
-
-            spans.extend(vec![
-                Span::raw("• "),
+                Span::raw(" • "),
                 Span::styled(
                     &session.status,
                     Style::default().fg(app.color_scheme.session_status_fg),
@@ -305,6 +316,11 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("↑/↓", Style::default().fg(app.color_scheme.help_key_fg)),
         Span::styled(
             " Navigate | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
+        Span::styled("s", Style::default().fg(app.color_scheme.help_key_fg)),
+        Span::styled(
+            " Toggle Display | ",
             Style::default().fg(app.color_scheme.help_text_fg),
         ),
         Span::styled("r", Style::default().fg(app.color_scheme.help_key_fg)),

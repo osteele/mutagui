@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 
@@ -59,6 +60,12 @@ pub struct SyncSession {
     pub beta: Endpoint,
     pub status: String,
     pub paused: bool,
+    #[serde(rename = "creationTime")]
+    pub creation_time: Option<String>,
+    #[serde(rename = "successfulCycles", default)]
+    pub successful_cycles: u64,
+    #[serde(skip)]
+    pub last_sync_time: Option<DateTime<Local>>,
 }
 
 impl SyncSession {
@@ -68,6 +75,36 @@ impl SyncSession {
 
     pub fn beta_display(&self) -> String {
         self.beta.display_path()
+    }
+
+    pub fn time_ago_display(&self) -> String {
+        match self.last_sync_time {
+            Some(sync_time) => {
+                let now = Local::now();
+                let duration = now.signed_duration_since(sync_time);
+                let seconds = duration.num_seconds();
+
+                if seconds < 60 {
+                    "just now".to_string()
+                } else if seconds < 120 {
+                    "1 min ago".to_string()
+                } else if seconds < 3600 {
+                    let mins = seconds / 60;
+                    format!("{} mins ago", mins)
+                } else if seconds < 7200 {
+                    "1 hour ago".to_string()
+                } else if seconds < 86400 {
+                    let hours = seconds / 3600;
+                    format!("{} hours ago", hours)
+                } else if seconds < 172800 {
+                    "1 day ago".to_string()
+                } else {
+                    let days = seconds / 86400;
+                    format!("{} days ago", days)
+                }
+            }
+            None => "never".to_string(),
+        }
     }
 }
 
