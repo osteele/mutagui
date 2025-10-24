@@ -2,6 +2,8 @@
 
 A terminal user interface for managing [Mutagen](https://mutagen.io/) sync sessions.
 
+For more development tools, see: https://osteele.com/software/development-tools
+
 ## Features
 
 - View all active Mutagen sync sessions in a clean, organized interface
