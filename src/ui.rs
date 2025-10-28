@@ -37,17 +37,22 @@ pub fn draw(f: &mut Frame, app: &App) {
             .split(chunks[1]);
 
         let mut chunk_idx = 0;
-        if !app.sessions.is_empty() {
-            draw_sessions(f, app, content_chunks[chunk_idx]);
-            chunk_idx += 1;
-        }
         if !app.projects.is_empty() {
             draw_projects(f, app, content_chunks[chunk_idx]);
+            chunk_idx += 1;
+        }
+        if !app.sessions.is_empty() {
+            draw_sessions(f, app, content_chunks[chunk_idx]);
         }
     }
 
     draw_status(f, app, chunks[2]);
     draw_help(f, app, chunks[3]);
+
+    // Draw conflict detail overlay if viewing conflicts
+    if app.viewing_conflicts {
+        draw_conflict_detail(f, app);
+    }
 }
 
 fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
@@ -169,6 +174,19 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 }
             }
 
+            // Add push indicator for one-way-replica sessions
+            if let Some(ref mode) = session.mode {
+                if mode == "one-way-replica" {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        "⬆",
+                        Style::default()
+                            .fg(app.color_scheme.status_running_fg)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+            }
+
             spans.extend(vec![
                 Span::raw(" • "),
                 Span::styled(
@@ -177,9 +195,28 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 ),
             ]);
 
+            // Add conflict indicator
+            if session.has_conflicts() {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    format!(
+                        "⚠ {} conflict{}",
+                        session.conflict_count(),
+                        if session.conflict_count() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ),
+                    Style::default()
+                        .fg(app.color_scheme.help_key_fg) // Using help_key_fg for warning color
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+
             let content = Line::from(spans);
 
-            let is_selected = i == app.selected_index;
+            let is_selected = i + app.projects.len() == app.selected_index;
             let style = if is_selected {
                 Style::default()
                     .bg(app.color_scheme.selection_bg)
@@ -202,7 +239,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
-    let project_index_offset = app.sessions.len();
+    let project_index_offset = 0; // Projects are now first
 
     let items: Vec<ListItem> = app
         .projects
@@ -312,48 +349,142 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
-    let help_text = Line::from(vec![
+    let is_project_selected = app.selected_index < app.projects.len();
+
+    let mut spans = vec![
         Span::styled("↑/↓", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Navigate | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-        Span::styled("s", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Toggle Display | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
+        Span::styled(" Nav | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled("m", Style::default().fg(app.color_scheme.help_key_fg)),
+        Span::styled(" Mode | ", Style::default().fg(app.color_scheme.help_text_fg)),
+    ];
+
+    if is_project_selected {
+        // Project-specific commands
+        spans.extend(vec![
+            Span::styled("s", Style::default().fg(app.color_scheme.help_key_fg)),
+            Span::styled(" Start/Stop | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled("p", Style::default().fg(app.color_scheme.help_key_fg)),
+            Span::styled(" Push | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled("Space", Style::default().fg(app.color_scheme.help_key_fg)),
+            Span::styled(" Pause/Resume | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        ]);
+    } else {
+        // Session-specific commands
+        spans.extend(vec![
+            Span::styled("Space", Style::default().fg(app.color_scheme.help_key_fg)),
+            Span::styled(" Pause/Resume | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled("f", Style::default().fg(app.color_scheme.help_key_fg)),
+            Span::styled(" Flush | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled("t", Style::default().fg(app.color_scheme.help_key_fg)),
+            Span::styled(" Terminate | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled("c", Style::default().fg(app.color_scheme.help_key_fg)),
+            Span::styled(" Conflicts | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        ]);
+    }
+
+    // Common commands
+    spans.extend(vec![
         Span::styled("r", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Refresh | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-        Span::styled("p", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Pause | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-        Span::styled("u", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Resume | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-        Span::styled("f", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Flush | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-        Span::styled("t", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Terminate | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
+        Span::styled(" Refresh | ", Style::default().fg(app.color_scheme.help_text_fg)),
         Span::styled("q", Style::default().fg(app.color_scheme.help_key_fg)),
         Span::styled(" Quit", Style::default().fg(app.color_scheme.help_text_fg)),
     ]);
 
-    let help =
-        Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"));
+    let help_text = Line::from(spans);
+    let help = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"));
 
     f.render_widget(help, area);
+}
+
+fn draw_conflict_detail(f: &mut Frame, app: &App) {
+    use ratatui::layout::{Alignment, Margin};
+
+    // Create a centered overlay area (80% width, 80% height)
+    let area = f.area();
+    let overlay_width = (area.width as f32 * 0.8) as u16;
+    let overlay_height = (area.height as f32 * 0.8) as u16;
+    let overlay_x = (area.width - overlay_width) / 2;
+    let overlay_y = (area.height - overlay_height) / 2;
+
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_width,
+        height: overlay_height,
+    };
+
+    // Clear the overlay area with a background
+    let overlay_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.color_scheme.help_key_fg))
+        .title(" Conflict Details (press 'c' to close) ")
+        .title_alignment(Alignment::Center)
+        .style(Style::default().bg(app.color_scheme.selection_bg));
+
+    f.render_widget(overlay_block, overlay_area);
+
+    // Draw conflict list inside the overlay
+    let inner_area = overlay_area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+
+    if let Some(conflicts) = app.get_selected_session_conflicts() {
+        if conflicts.is_empty() {
+            let no_conflicts = Paragraph::new("No conflicts found")
+                .style(Style::default().fg(app.color_scheme.session_status_fg))
+                .alignment(Alignment::Center);
+            f.render_widget(no_conflicts, inner_area);
+        } else {
+            let conflict_items: Vec<ListItem> = conflicts
+                .iter()
+                .map(|conflict| {
+                    let mut lines = vec![Line::from(vec![
+                        Span::styled(
+                            "Path: ",
+                            Style::default()
+                                .fg(app.color_scheme.session_name_fg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            &conflict.path,
+                            Style::default().fg(app.color_scheme.session_alpha_fg),
+                        ),
+                    ])];
+
+                    if let Some(ref alpha_changes) = conflict.alpha_changes {
+                        lines.push(Line::from(vec![
+                            Span::raw("  Alpha: "),
+                            Span::styled(
+                                alpha_changes,
+                                Style::default().fg(app.color_scheme.session_status_fg),
+                            ),
+                        ]));
+                    }
+
+                    if let Some(ref beta_changes) = conflict.beta_changes {
+                        lines.push(Line::from(vec![
+                            Span::raw("  Beta:  "),
+                            Span::styled(
+                                beta_changes,
+                                Style::default().fg(app.color_scheme.session_status_fg),
+                            ),
+                        ]));
+                    }
+
+                    lines.push(Line::from(""));
+
+                    ListItem::new(lines)
+                })
+                .collect();
+
+            let conflict_list = List::new(conflict_items).block(Block::default());
+            f.render_widget(conflict_list, inner_area);
+        }
+    } else {
+        let error = Paragraph::new("No session selected")
+            .style(Style::default().fg(app.color_scheme.session_status_fg))
+            .alignment(Alignment::Center);
+        f.render_widget(error, inner_area);
+    }
 }

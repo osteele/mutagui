@@ -67,39 +67,52 @@ async fn run_app<B: ratatui::backend::Backend>(
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(key) => match key.code {
-                    KeyCode::Char('q') => {
-                        app.quit();
+                Event::Key(key) => {
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            app.quit();
+                        }
+                        KeyCode::Char('r') => {
+                            app.refresh_sessions().await?;
+                        }
+                        KeyCode::Char('m') => {
+                            app.toggle_session_display();
+                        }
+                        KeyCode::Char('s') => {
+                            app.toggle_selected_project();
+                            app.refresh_sessions().await?;
+                        }
+                        KeyCode::Char('p') => {
+                            if !app.selected_project_has_sessions() {
+                                app.push_selected_project();
+                                app.refresh_sessions().await?;
+                            } else {
+                                app.status_message = Some("Cannot push: project has active sessions. Stop the project first.".to_string());
+                            }
+                        }
+                        KeyCode::Char(' ') => {
+                            app.toggle_pause_selected();
+                            app.refresh_sessions().await?;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.select_previous();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.select_next();
+                        }
+                        KeyCode::Char('t') => {
+                            app.terminate_selected();
+                        }
+                        KeyCode::Char('f') => {
+                            app.flush_selected();
+                            app.refresh_sessions().await?;
+                        }
+                        KeyCode::Char('c') => {
+                            app.toggle_conflict_view();
+                        }
+                        _ => {}
                     }
-                    KeyCode::Char('r') => {
-                        app.refresh_sessions().await?;
-                    }
-                    KeyCode::Char('s') => {
-                        app.toggle_session_display();
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        app.select_previous();
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        app.select_next();
-                    }
-                    KeyCode::Char('p') => {
-                        app.pause_selected();
-                        app.refresh_sessions().await?;
-                    }
-                    KeyCode::Char('u') => {
-                        app.resume_selected();
-                        app.refresh_sessions().await?;
-                    }
-                    KeyCode::Char('t') => {
-                        app.terminate_selected();
-                    }
-                    KeyCode::Char('f') => {
-                        app.flush_selected();
-                        app.refresh_sessions().await?;
-                    }
-                    _ => {}
-                },
+                }
                 Event::Resize(_, _) => {
                     // Terminal was resized, just redraw on next iteration
                 }

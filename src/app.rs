@@ -22,6 +22,7 @@ pub struct App {
     pub last_refresh: Option<DateTime<Local>>,
     pub project_dir: Option<PathBuf>,
     pub session_display_mode: SessionDisplayMode,
+    pub viewing_conflicts: bool,
 }
 
 impl App {
@@ -37,6 +38,7 @@ impl App {
             last_refresh: None,
             project_dir,
             session_display_mode: SessionDisplayMode::ShowLastRefresh,
+            viewing_conflicts: false,
         }
     }
 
@@ -118,12 +120,29 @@ impl App {
         }
     }
 
-    fn get_selected_session_index(&self) -> Option<usize> {
-        if self.selected_index < self.sessions.len() {
+    fn get_selected_project_index(&self) -> Option<usize> {
+        if self.selected_index < self.projects.len() {
             Some(self.selected_index)
         } else {
             None
         }
+    }
+
+    fn get_selected_session_index(&self) -> Option<usize> {
+        if self.selected_index >= self.projects.len() {
+            Some(self.selected_index - self.projects.len())
+        } else {
+            None
+        }
+    }
+
+    pub fn selected_project_has_sessions(&self) -> bool {
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                return !project.active_sessions.is_empty();
+            }
+        }
+        false
     }
 
     pub fn pause_selected(&mut self) {
@@ -191,6 +210,145 @@ impl App {
         }
     }
 
+    pub fn start_selected_project(&mut self) {
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                match self.mutagen_client.start_project(&project.file.path) {
+                    Ok(_) => {
+                        self.status_message =
+                            Some(format!("Started project: {}", project.file.display_name()));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to start project: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn stop_selected_project(&mut self) {
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                match self.mutagen_client.terminate_project(&project.file.path) {
+                    Ok(_) => {
+                        self.status_message =
+                            Some(format!("Stopped project: {}", project.file.display_name()));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to stop project: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn toggle_selected_project(&mut self) {
+        if self.selected_project_has_sessions() {
+            self.stop_selected_project();
+        } else {
+            self.start_selected_project();
+        }
+    }
+
+    pub fn push_selected_project(&mut self) {
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                if let Some((session_name, session_def)) = project.file.sessions.iter().next() {
+                    let push_name = format!("{}-push", session_name);
+                    let ignore = session_def.ignore.as_ref().and_then(|v| {
+                        if let serde_yaml::Value::Sequence(seq) = v {
+                            Some(
+                                seq.iter()
+                                    .filter_map(|item| item.as_str().map(String::from))
+                                    .collect::<Vec<_>>(),
+                            )
+                        } else {
+                            None
+                        }
+                    });
+
+                    match self.mutagen_client.create_push_session(
+                        &push_name,
+                        &session_def.alpha,
+                        &session_def.beta,
+                        ignore.as_deref(),
+                    ) {
+                        Ok(_) => {
+                            self.status_message =
+                                Some(format!("Created push session: {}", push_name));
+                        }
+                        Err(e) => {
+                            self.status_message =
+                                Some(format!("Failed to create push session: {}", e));
+                        }
+                    }
+                } else {
+                    self.status_message = Some("No sessions defined in project file".to_string());
+                }
+            }
+        }
+    }
+
+    pub fn pause_selected_project(&mut self) {
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                match self.mutagen_client.pause_project(&project.file.path) {
+                    Ok(_) => {
+                        self.status_message =
+                            Some(format!("Paused project: {}", project.file.display_name()));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to pause project: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn resume_selected_project(&mut self) {
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                match self.mutagen_client.resume_project(&project.file.path) {
+                    Ok(_) => {
+                        self.status_message =
+                            Some(format!("Resumed project: {}", project.file.display_name()));
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Failed to resume project: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn toggle_pause_selected(&mut self) {
+        if let Some(idx) = self.get_selected_session_index() {
+            if let Some(session) = self.sessions.get(idx) {
+                if session.paused {
+                    self.resume_selected();
+                } else {
+                    self.pause_selected();
+                }
+            }
+        } else if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                // Only pause/resume if project has active sessions
+                if project.active_sessions.is_empty() {
+                    self.status_message = Some("Project has no active sessions. Use 's' to start.".to_string());
+                    return;
+                }
+
+                // Check if any session is running (not paused)
+                let has_running = project.active_sessions.iter().any(|s| !s.paused);
+                if has_running {
+                    self.pause_selected_project();
+                } else {
+                    self.resume_selected_project();
+                }
+            }
+        }
+    }
+
     pub fn quit(&mut self) {
         self.should_quit = true;
     }
@@ -207,6 +365,35 @@ impl App {
                 SessionDisplayMode::ShowLastRefresh => "Last Sync Time",
             }
         ));
+    }
+
+    pub fn toggle_conflict_view(&mut self) {
+        if let Some(idx) = self.get_selected_session_index() {
+            if let Some(session) = self.sessions.get(idx) {
+                if session.has_conflicts() {
+                    self.viewing_conflicts = !self.viewing_conflicts;
+                    if self.viewing_conflicts {
+                        self.status_message =
+                            Some(format!("Viewing conflicts for: {}", session.name));
+                    } else {
+                        self.status_message = Some("Closed conflict view".to_string());
+                    }
+                } else {
+                    self.status_message = Some("No conflicts in selected session".to_string());
+                }
+            }
+        } else {
+            self.status_message = Some("Select a session to view conflicts".to_string());
+        }
+    }
+
+    pub fn get_selected_session_conflicts(&self) -> Option<&Vec<crate::mutagen::Conflict>> {
+        if let Some(idx) = self.get_selected_session_index() {
+            if let Some(session) = self.sessions.get(idx) {
+                return Some(&session.conflicts);
+            }
+        }
+        None
     }
 
     pub fn should_auto_refresh(&self) -> bool {
