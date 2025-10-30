@@ -256,8 +256,12 @@ fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
             let mut lines = Vec::new();
 
             let file_path = project.file.path.display().to_string();
-            let short_path = if file_path.starts_with(&std::env::var("HOME").unwrap_or_default()) {
-                file_path.replace(&std::env::var("HOME").unwrap_or_default(), "~")
+            let short_path = if let Ok(home) = std::env::var("HOME") {
+                if !home.is_empty() && file_path.starts_with(&home) {
+                    file_path.replace(&home, "~")
+                } else {
+                    file_path
+                }
             } else {
                 file_path
             };
@@ -353,45 +357,76 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
 
     let mut spans = vec![
         Span::styled("↑/↓", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Nav | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Nav | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("m", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Mode | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Mode | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
     ];
 
     if is_project_selected {
         // Project-specific commands
         spans.extend(vec![
             Span::styled("s", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(" Start/Stop | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled(
+                " Start/Stop | ",
+                Style::default().fg(app.color_scheme.help_text_fg),
+            ),
             Span::styled("p", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(" Push | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled(
+                " Push | ",
+                Style::default().fg(app.color_scheme.help_text_fg),
+            ),
             Span::styled("Space", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(" Pause/Resume | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled(
+                " Pause/Resume | ",
+                Style::default().fg(app.color_scheme.help_text_fg),
+            ),
         ]);
     } else {
         // Session-specific commands
         spans.extend(vec![
             Span::styled("Space", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(" Pause/Resume | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled(
+                " Pause/Resume | ",
+                Style::default().fg(app.color_scheme.help_text_fg),
+            ),
             Span::styled("f", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(" Flush | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled(
+                " Flush | ",
+                Style::default().fg(app.color_scheme.help_text_fg),
+            ),
             Span::styled("t", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(" Terminate | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled(
+                " Terminate | ",
+                Style::default().fg(app.color_scheme.help_text_fg),
+            ),
             Span::styled("c", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(" Conflicts | ", Style::default().fg(app.color_scheme.help_text_fg)),
+            Span::styled(
+                " Conflicts | ",
+                Style::default().fg(app.color_scheme.help_text_fg),
+            ),
         ]);
     }
 
     // Common commands
     spans.extend(vec![
         Span::styled("r", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Refresh | ", Style::default().fg(app.color_scheme.help_text_fg)),
+        Span::styled(
+            " Refresh | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("q", Style::default().fg(app.color_scheme.help_key_fg)),
         Span::styled(" Quit", Style::default().fg(app.color_scheme.help_text_fg)),
     ]);
 
     let help_text = Line::from(spans);
-    let help = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"));
+    let help =
+        Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"));
 
     f.render_widget(help, area);
 }
@@ -453,14 +488,12 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
                     ])];
 
                     if !conflict.alpha_changes.is_empty() {
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                "  Alpha changes:",
-                                Style::default()
-                                    .fg(app.color_scheme.session_name_fg)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]));
+                        lines.push(Line::from(vec![Span::styled(
+                            "  Alpha changes:",
+                            Style::default()
+                                .fg(app.color_scheme.session_name_fg)
+                                .add_modifier(Modifier::BOLD),
+                        )]));
                         for change in &conflict.alpha_changes {
                             lines.push(Line::from(vec![
                                 Span::raw("    "),
@@ -491,14 +524,12 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
                     }
 
                     if !conflict.beta_changes.is_empty() {
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                "  Beta changes:",
-                                Style::default()
-                                    .fg(app.color_scheme.session_name_fg)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]));
+                        lines.push(Line::from(vec![Span::styled(
+                            "  Beta changes:",
+                            Style::default()
+                                .fg(app.color_scheme.session_name_fg)
+                                .add_modifier(Modifier::BOLD),
+                        )]));
                         for change in &conflict.beta_changes {
                             lines.push(Line::from(vec![
                                 Span::raw("    "),

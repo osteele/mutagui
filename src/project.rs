@@ -30,11 +30,69 @@ pub struct SessionDefinition {
     pub ignore: Option<serde_yaml::Value>,
 }
 
+impl SessionDefinition {
+    /// Extract ignore patterns from this session definition, merging with defaults if provided.
+    /// Supports:
+    /// - Simple list: `ignore: [pattern1, pattern2]`
+    /// - Object with paths: `ignore: { paths: [pattern1, pattern2] }`
+    /// - VCS ignore: `ignore: { vcs: true }`
+    pub fn get_ignore_patterns(&self, defaults: Option<&serde_yaml::Value>) -> Vec<String> {
+        let mut patterns = Vec::new();
+
+        // First, extract patterns from defaults if provided
+        if let Some(defaults_value) = defaults {
+            if let Some(default_ignore) = defaults_value.get("ignore") {
+                extract_patterns_from_value(default_ignore, &mut patterns);
+            }
+        }
+
+        // Then, extract patterns from this session (session-specific overrides defaults)
+        if let Some(ignore_value) = &self.ignore {
+            extract_patterns_from_value(ignore_value, &mut patterns);
+        }
+
+        patterns
+    }
+}
+
+/// Extract ignore patterns from a YAML value, handling multiple formats
+fn extract_patterns_from_value(value: &serde_yaml::Value, patterns: &mut Vec<String>) {
+    match value {
+        // Simple list: [pattern1, pattern2, ...]
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq {
+                if let Some(pattern) = item.as_str() {
+                    if !patterns.contains(&pattern.to_string()) {
+                        patterns.push(pattern.to_string());
+                    }
+                }
+            }
+        }
+        // Object format: { paths: [...], vcs: true }
+        serde_yaml::Value::Mapping(map) => {
+            // Extract from 'paths' key
+            if let Some(serde_yaml::Value::Sequence(paths)) = map.get("paths") {
+                for item in paths {
+                    if let Some(pattern) = item.as_str() {
+                        if !patterns.contains(&pattern.to_string()) {
+                            patterns.push(pattern.to_string());
+                        }
+                    }
+                }
+            }
+            // Note: We don't handle 'vcs: true' or 'regex' patterns here
+            // as they require different handling by Mutagen CLI
+        }
+        _ => {}
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectFile {
     pub path: PathBuf,
     pub target_name: Option<String>,
     pub sessions: HashMap<String, SessionDefinition>,
+    pub defaults: Option<HashMap<String, serde_yaml::Value>>,
 }
 
 impl ProjectFile {
@@ -47,7 +105,7 @@ impl ProjectFile {
 
         let target_name = extract_target_name(&path);
 
-        let sessions = yml
+        let (sessions, defaults) = yml
             .sync
             .map(|sync| {
                 let mut filtered = HashMap::new();
@@ -56,7 +114,12 @@ impl ProjectFile {
                         filtered.insert(key, value);
                     }
                 }
-                filtered
+                let defaults = if sync.defaults.is_empty() {
+                    None
+                } else {
+                    Some(sync.defaults)
+                };
+                (filtered, defaults)
             })
             .unwrap_or_default();
 
@@ -64,6 +127,7 @@ impl ProjectFile {
             path,
             target_name,
             sessions,
+            defaults,
         })
     }
 
@@ -158,7 +222,7 @@ pub fn discover_project_files(base_dir: Option<&Path>) -> Result<Vec<ProjectFile
 
 fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
     let mut paths = Vec::new();
-    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
+    let home = std::env::var("HOME").ok();
 
     let start_dir = base_dir.unwrap_or_else(|| Path::new("."));
     let start_dir_str = start_dir.to_str().unwrap_or(".");
@@ -201,7 +265,9 @@ fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
 
         // Stop at filesystem root or home directory
         if let Some(parent) = dir.parent() {
-            if parent == Path::new("/") || dir == Path::new(&home) {
+            let at_root = parent == Path::new("/");
+            let at_home = home.as_ref().is_some_and(|h| dir == Path::new(h));
+            if at_root || at_home {
                 break;
             }
             dir = parent;
@@ -210,9 +276,11 @@ fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
         }
     }
 
-    // User config directories
-    paths.push(format!("{}/.config/mutagen/projects/*.yml", home));
-    paths.push(format!("{}/.mutagen/projects/*.yml", home));
+    // User config directories (only if HOME is set)
+    if let Some(home_dir) = home {
+        paths.push(format!("{}/.config/mutagen/projects/*.yml", home_dir));
+        paths.push(format!("{}/.mutagen/projects/*.yml", home_dir));
+    }
 
     paths
 }

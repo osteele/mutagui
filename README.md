@@ -96,10 +96,12 @@ The `--project-dir` option specifies where to start searching for `mutagen.yml` 
 | `↑` / `k` | Move selection up |
 | `↓` / `j` | Move selection down |
 | `r` | Refresh session list and projects |
-| `p` | Pause selected session |
+| `p` | Pause selected session (Sessions view) / Create push session (Projects view) |
 | `u` | Resume selected session |
 | `f` | Flush selected session |
 | `t` | Terminate selected session |
+| `s` | Start/stop selected project |
+| `Space` | Toggle pause on selected item |
 | `q` | Quit application |
 
 ## Display
@@ -134,6 +136,76 @@ Shows discovered `mutagen.yml` project files:
 
 - Current status message
 - Last refresh timestamp
+
+## Push Sessions
+
+The push feature allows you to create one-time, one-way sync sessions from a project definition. This is useful for quickly pushing local changes to a remote without starting a full bidirectional sync.
+
+**To create a push session:**
+1. Switch to Projects view (press `Tab`)
+2. Select a project
+3. Press `p` to create a push session
+
+The application will create a temporary session named `<session-name>-push` with:
+- Mode: `one-way-replica` (alpha → beta)
+- Endpoints from the project file
+- Ignore patterns (with limitations - see below)
+
+**Important:** You can only create a push session when the project has no active sessions running. Stop the project first if needed (press `s`).
+
+### Push Session Limitations
+
+**Ignore Pattern Support:**
+
+✅ **Fully Supported:**
+- Simple list format in YAML
+  ```yaml
+  sync:
+    myproject:
+      alpha: /local/path
+      beta: user@host:/remote/path
+      ignore:
+        - node_modules
+        - .git
+        - "*.tmp"
+  ```
+
+- `sync.defaults` section (merged with session-specific rules)
+  ```yaml
+  sync:
+    defaults:
+      ignore:
+        - .git
+        - node_modules
+    myproject:
+      alpha: /local/path
+      beta: user@host:/remote/path
+      ignore:
+        - "*.tmp"  # Combined with defaults
+  ```
+
+- Object format with `paths` key
+  ```yaml
+  sync:
+    myproject:
+      alpha: /local/path
+      beta: user@host:/remote/path
+      ignore:
+        paths:
+          - node_modules
+          - .git
+  ```
+
+❌ **Not yet supported:**
+- VCS ignore flag (`ignore: { vcs: true }`)
+- Regular expression patterns (`ignore: { regex: "pattern.*" }`)
+
+**Note:** Ignore patterns from `sync.defaults` are merged with session-specific patterns. Session-specific patterns are added to (not replacing) defaults.
+
+**Session Selection:** When a project file contains multiple session definitions:
+- If exactly one session is defined → uses that session
+- If multiple sessions are defined and one or more are active → uses the first active session (alphabetically)
+- If multiple sessions are defined and none are active → uses the first session alphabetically
 
 ## Development
 

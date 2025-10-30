@@ -155,19 +155,55 @@ fn execute_with_timeout(mut cmd: Command, timeout_secs: u64) -> Result<Output> {
     let start = Instant::now();
     let timeout_duration = Duration::from_secs(timeout_secs);
 
+    // Take ownership of pipes for periodic draining
+    let mut stdout_pipe = child.stdout.take().expect("stdout should be piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr should be piped");
+
+    // Set pipes to non-blocking mode
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            let stdout_fd = stdout_pipe.as_raw_fd();
+            let stderr_fd = stderr_pipe.as_raw_fd();
+            libc::fcntl(stdout_fd, libc::F_SETFL, libc::O_NONBLOCK);
+            libc::fcntl(stderr_fd, libc::F_SETFL, libc::O_NONBLOCK);
+        }
+    }
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut buffer = [0u8; 4096];
+
     loop {
+        // Drain stdout (non-blocking)
+        loop {
+            match stdout_pipe.read(&mut buffer) {
+                Ok(0) => break, // EOF or no data available
+                Ok(n) => stdout.extend_from_slice(&buffer[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break, // Other errors, stop reading
+            }
+        }
+
+        // Drain stderr (non-blocking)
+        loop {
+            match stderr_pipe.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => stderr.extend_from_slice(&buffer[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+
+        // Check if process has exited
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Process finished - collect output
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-
-                if let Some(mut stdout_pipe) = child.stdout.take() {
-                    let _ = stdout_pipe.read_to_end(&mut stdout);
-                }
-                if let Some(mut stderr_pipe) = child.stderr.take() {
-                    let _ = stderr_pipe.read_to_end(&mut stderr);
-                }
+                // Process finished - drain any remaining output
+                let _ = stdout_pipe.read_to_end(&mut stdout);
+                let _ = stderr_pipe.read_to_end(&mut stderr);
 
                 return Ok(Output {
                     status,
@@ -181,12 +217,6 @@ fn execute_with_timeout(mut cmd: Command, timeout_secs: u64) -> Result<Output> {
                     // Timeout - kill the process
                     let _ = child.kill();
                     let _ = child.wait(); // Reap zombie
-
-                    // Try to get partial stderr output
-                    let mut stderr = Vec::new();
-                    if let Some(mut stderr_pipe) = child.stderr.take() {
-                        let _ = stderr_pipe.read_to_end(&mut stderr);
-                    }
 
                     let stderr_str = String::from_utf8_lossy(&stderr);
                     if stderr_str.trim().is_empty() {
@@ -248,9 +278,7 @@ impl MutagenClient {
 
     pub fn pause_session(&self, identifier: &str) -> Result<()> {
         let mut cmd = Command::new("mutagen");
-        cmd.arg("sync")
-            .arg("pause")
-            .arg(identifier);
+        cmd.arg("sync").arg("pause").arg(identifier);
 
         let output = execute_with_timeout(cmd, 5)?;
 
@@ -264,9 +292,7 @@ impl MutagenClient {
 
     pub fn resume_session(&self, identifier: &str) -> Result<()> {
         let mut cmd = Command::new("mutagen");
-        cmd.arg("sync")
-            .arg("resume")
-            .arg(identifier);
+        cmd.arg("sync").arg("resume").arg(identifier);
 
         let output = execute_with_timeout(cmd, 5)?;
 
@@ -280,9 +306,7 @@ impl MutagenClient {
 
     pub fn terminate_session(&self, identifier: &str) -> Result<()> {
         let mut cmd = Command::new("mutagen");
-        cmd.arg("sync")
-            .arg("terminate")
-            .arg(identifier);
+        cmd.arg("sync").arg("terminate").arg(identifier);
 
         let output = execute_with_timeout(cmd, 5)?;
 
@@ -296,9 +320,7 @@ impl MutagenClient {
 
     pub fn flush_session(&self, identifier: &str) -> Result<()> {
         let mut cmd = Command::new("mutagen");
-        cmd.arg("sync")
-            .arg("flush")
-            .arg(identifier);
+        cmd.arg("sync").arg("flush").arg(identifier);
 
         let output = execute_with_timeout(cmd, 5)?;
 
@@ -312,10 +334,7 @@ impl MutagenClient {
 
     pub fn start_project(&self, project_file: &Path) -> Result<()> {
         let mut cmd = Command::new("mutagen");
-        cmd.arg("project")
-            .arg("start")
-            .arg("-f")
-            .arg(project_file);
+        cmd.arg("project").arg("start").arg("-f").arg(project_file);
 
         let output = execute_with_timeout(cmd, 10)?; // Project operations might take longer
 
@@ -346,10 +365,7 @@ impl MutagenClient {
 
     pub fn pause_project(&self, project_file: &Path) -> Result<()> {
         let mut cmd = Command::new("mutagen");
-        cmd.arg("project")
-            .arg("pause")
-            .arg("-f")
-            .arg(project_file);
+        cmd.arg("project").arg("pause").arg("-f").arg(project_file);
 
         let output = execute_with_timeout(cmd, 10)?;
 
@@ -363,10 +379,7 @@ impl MutagenClient {
 
     pub fn resume_project(&self, project_file: &Path) -> Result<()> {
         let mut cmd = Command::new("mutagen");
-        cmd.arg("project")
-            .arg("resume")
-            .arg("-f")
-            .arg(project_file);
+        cmd.arg("project").arg("resume").arg("-f").arg(project_file);
 
         let output = execute_with_timeout(cmd, 10)?;
 

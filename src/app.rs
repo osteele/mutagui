@@ -253,19 +253,46 @@ impl App {
     pub fn push_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                if let Some((session_name, session_def)) = project.file.sessions.iter().next() {
+                // Determine which session to push - prefer active sessions, then alphabetical order
+                let selected_session = if project.file.sessions.len() == 1 {
+                    // Only one session - use it
+                    project.file.sessions.iter().next()
+                } else if !project.active_sessions.is_empty() {
+                    // Multiple sessions, but some are active - find the first active one alphabetically
+                    let active_names: std::collections::HashSet<_> = project
+                        .active_sessions
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect();
+
+                    let mut sorted_sessions: Vec<_> = project.file.sessions.iter().collect();
+                    sorted_sessions.sort_by_key(|(name, _)| *name);
+
+                    sorted_sessions
+                        .into_iter()
+                        .find(|(name, _)| active_names.contains(name.as_str()))
+                } else {
+                    // Multiple sessions, none active - use first alphabetically
+                    let mut sorted_sessions: Vec<_> = project.file.sessions.iter().collect();
+                    sorted_sessions.sort_by_key(|(name, _)| *name);
+                    sorted_sessions.into_iter().next()
+                };
+
+                if let Some((session_name, session_def)) = selected_session {
                     let push_name = format!("{}-push", session_name);
-                    let ignore = session_def.ignore.as_ref().and_then(|v| {
-                        if let serde_yaml::Value::Sequence(seq) = v {
-                            Some(
-                                seq.iter()
-                                    .filter_map(|item| item.as_str().map(String::from))
-                                    .collect::<Vec<_>>(),
-                            )
-                        } else {
-                            None
-                        }
-                    });
+
+                    // Extract ignore patterns, merging with defaults
+                    let defaults_value = project
+                        .file
+                        .defaults
+                        .as_ref()
+                        .and_then(|defaults| serde_yaml::to_value(defaults).ok());
+                    let ignore_patterns = session_def.get_ignore_patterns(defaults_value.as_ref());
+                    let ignore = if ignore_patterns.is_empty() {
+                        None
+                    } else {
+                        Some(ignore_patterns)
+                    };
 
                     match self.mutagen_client.create_push_session(
                         &push_name,
@@ -334,7 +361,8 @@ impl App {
             if let Some(project) = self.projects.get(project_idx) {
                 // Only pause/resume if project has active sessions
                 if project.active_sessions.is_empty() {
-                    self.status_message = Some("Project has no active sessions. Use 's' to start.".to_string());
+                    self.status_message =
+                        Some("Project has no active sessions. Use 's' to start.".to_string());
                     return;
                 }
 
