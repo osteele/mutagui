@@ -441,35 +441,91 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
                 .map(|conflict| {
                     let mut lines = vec![Line::from(vec![
                         Span::styled(
-                            "Path: ",
+                            "Root: ",
                             Style::default()
                                 .fg(app.color_scheme.session_name_fg)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
-                            &conflict.path,
+                            &conflict.root,
                             Style::default().fg(app.color_scheme.session_alpha_fg),
                         ),
                     ])];
 
-                    if let Some(ref alpha_changes) = conflict.alpha_changes {
+                    if !conflict.alpha_changes.is_empty() {
                         lines.push(Line::from(vec![
-                            Span::raw("  Alpha: "),
                             Span::styled(
-                                alpha_changes,
-                                Style::default().fg(app.color_scheme.session_status_fg),
+                                "  Alpha changes:",
+                                Style::default()
+                                    .fg(app.color_scheme.session_name_fg)
+                                    .add_modifier(Modifier::BOLD),
                             ),
                         ]));
+                        for change in &conflict.alpha_changes {
+                            lines.push(Line::from(vec![
+                                Span::raw("    "),
+                                Span::styled(
+                                    &change.path,
+                                    Style::default().fg(app.color_scheme.session_alpha_fg),
+                                ),
+                            ]));
+                            lines.push(Line::from(vec![
+                                Span::raw("      "),
+                                Span::styled(
+                                    &change.old.digest[..8],
+                                    Style::default().fg(app.color_scheme.session_status_fg),
+                                ),
+                                Span::raw(" → "),
+                                Span::styled(
+                                    &change.new.digest[..8],
+                                    Style::default().fg(app.color_scheme.session_status_fg),
+                                ),
+                                Span::raw(" ("),
+                                Span::styled(
+                                    &change.new.kind,
+                                    Style::default().fg(app.color_scheme.session_status_fg),
+                                ),
+                                Span::raw(")"),
+                            ]));
+                        }
                     }
 
-                    if let Some(ref beta_changes) = conflict.beta_changes {
+                    if !conflict.beta_changes.is_empty() {
                         lines.push(Line::from(vec![
-                            Span::raw("  Beta:  "),
                             Span::styled(
-                                beta_changes,
-                                Style::default().fg(app.color_scheme.session_status_fg),
+                                "  Beta changes:",
+                                Style::default()
+                                    .fg(app.color_scheme.session_name_fg)
+                                    .add_modifier(Modifier::BOLD),
                             ),
                         ]));
+                        for change in &conflict.beta_changes {
+                            lines.push(Line::from(vec![
+                                Span::raw("    "),
+                                Span::styled(
+                                    &change.path,
+                                    Style::default().fg(app.color_scheme.session_beta_fg),
+                                ),
+                            ]));
+                            lines.push(Line::from(vec![
+                                Span::raw("      "),
+                                Span::styled(
+                                    &change.old.digest[..8],
+                                    Style::default().fg(app.color_scheme.session_status_fg),
+                                ),
+                                Span::raw(" → "),
+                                Span::styled(
+                                    &change.new.digest[..8],
+                                    Style::default().fg(app.color_scheme.session_status_fg),
+                                ),
+                                Span::raw(" ("),
+                                Span::styled(
+                                    &change.new.kind,
+                                    Style::default().fg(app.color_scheme.session_status_fg),
+                                ),
+                                Span::raw(")"),
+                            ]));
+                        }
                     }
 
                     lines.push(Line::from(""));

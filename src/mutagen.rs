@@ -7,12 +7,25 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Conflict {
+pub struct FileState {
+    pub kind: String,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Change {
     pub path: String,
-    #[serde(default)]
-    pub alpha_changes: Option<String>,
-    #[serde(default)]
-    pub beta_changes: Option<String>,
+    pub old: FileState,
+    pub new: FileState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Conflict {
+    pub root: String,
+    #[serde(rename = "alphaChanges", default)]
+    pub alpha_changes: Vec<Change>,
+    #[serde(rename = "betaChanges", default)]
+    pub beta_changes: Vec<Change>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
