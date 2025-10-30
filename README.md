@@ -196,8 +196,30 @@ The application will create a temporary session named `<session-name>-push` with
           - .git
   ```
 
+- VCS ignore flag (ignores `.git`, `.svn`, `.hg`, `.bzr`, `_darcs`, `.fossil-settings`)
+  ```yaml
+  sync:
+    myproject:
+      alpha: /local/path
+      beta: user@host:/remote/path
+      ignore:
+        vcs: true
+  ```
+
+- Combined VCS and custom paths
+  ```yaml
+  sync:
+    myproject:
+      alpha: /local/path
+      beta: user@host:/remote/path
+      ignore:
+        vcs: true
+        paths:
+          - node_modules
+          - "*.tmp"
+  ```
+
 ❌ **Not yet supported:**
-- VCS ignore flag (`ignore: { vcs: true }`)
 - Regular expression patterns (`ignore: { regex: "pattern.*" }`)
 
 **Note:** Ignore patterns from `sync.defaults` are merged with session-specific patterns. Session-specific patterns are added to (not replacing) defaults.

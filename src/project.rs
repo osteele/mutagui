@@ -70,6 +70,17 @@ fn extract_patterns_from_value(value: &serde_yaml::Value, patterns: &mut Vec<Str
         }
         // Object format: { paths: [...], vcs: true }
         serde_yaml::Value::Mapping(map) => {
+            // Handle vcs: true flag
+            if let Some(serde_yaml::Value::Bool(true)) = map.get("vcs") {
+                // Add common VCS directories (matches Mutagen's behavior)
+                for vcs_dir in &[".git", ".svn", ".hg", ".bzr", "_darcs", ".fossil-settings"] {
+                    let pattern = vcs_dir.to_string();
+                    if !patterns.contains(&pattern) {
+                        patterns.push(pattern);
+                    }
+                }
+            }
+
             // Extract from 'paths' key
             if let Some(serde_yaml::Value::Sequence(paths)) = map.get("paths") {
                 for item in paths {
@@ -80,8 +91,7 @@ fn extract_patterns_from_value(value: &serde_yaml::Value, patterns: &mut Vec<Str
                     }
                 }
             }
-            // Note: We don't handle 'vcs: true' or 'regex' patterns here
-            // as they require different handling by Mutagen CLI
+            // Note: We don't handle 'regex' patterns here as they require different handling
         }
         _ => {}
     }
