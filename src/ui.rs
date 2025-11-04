@@ -44,12 +44,25 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.sessions.is_empty() && app.projects.is_empty() {
         draw_empty_state(f, app, chunks[1]);
     } else {
+        // Build constraints based on what's present
+        // Use Percentage(100) when only one section exists to fill the viewport
+        let has_sessions = !app.sessions.is_empty();
+        let has_projects = !app.projects.is_empty();
+
         let mut constraints = Vec::new();
-        if !app.sessions.is_empty() {
-            constraints.push(Constraint::Percentage(50));
+        if has_projects {
+            if has_sessions {
+                constraints.push(Constraint::Percentage(50)); // Both: split 50/50
+            } else {
+                constraints.push(Constraint::Percentage(100)); // Projects only: fill viewport
+            }
         }
-        if !app.projects.is_empty() {
-            constraints.push(Constraint::Percentage(50));
+        if has_sessions {
+            if has_projects {
+                constraints.push(Constraint::Percentage(50)); // Both: split 50/50
+            } else {
+                constraints.push(Constraint::Percentage(100)); // Sessions only: fill viewport
+            }
         }
 
         let content_chunks = Layout::default()

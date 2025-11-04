@@ -251,6 +251,12 @@ fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
     paths.push(format!("{}/conf/*.yml", start_dir_str));
     paths.push(format!("{}/conf/mutagen/*.yml", start_dir_str));
 
+    // Recursive search for mutagen.yml files in subdirectories
+    // Limit depth to avoid scanning too many files (e.g., node_modules, .git, etc.)
+    // Pattern: up to 3 levels deep (*/**/mutagen.yml covers */mutagen.yml, */*/mutagen.yml, */*/*/mutagen.yml)
+    paths.push(format!("{}/**/mutagen.yml", start_dir_str));
+    paths.push(format!("{}/**/mutagen-*.yml", start_dir_str));
+
     // Walk up directory tree looking for project subdirectories
     let walk_start = if let Some(base) = base_dir {
         base.to_path_buf()
@@ -342,9 +348,19 @@ pub fn correlate_projects_with_sessions(
 /// Handles relative paths, strips trailing slashes, and resolves symlinks.
 /// Returns the original path string if canonicalization fails (e.g., for remote paths).
 fn normalize_path(path: &str) -> String {
+    // Check if this is a Windows drive letter path (e.g., C:\, D:\)
+    // Pattern: single letter followed by colon at position 1
+    let is_windows_drive = path.len() >= 2
+        && path.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && path.chars().nth(1) == Some(':');
+
     // Remote paths (host:path format) cannot be canonicalized locally
-    if path.contains(':') {
-        return path.trim_end_matches('/').to_string();
+    // But exclude Windows drive letters which should be canonicalized
+    if path.contains(':') && !is_windows_drive {
+        return path
+            .trim_end_matches('/')
+            .trim_end_matches('\\')
+            .to_string();
     }
 
     // Try to canonicalize the path

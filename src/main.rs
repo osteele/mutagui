@@ -90,12 +90,25 @@ async fn run_app<B: ratatui::backend::Backend>(
                             app.refresh_sessions().await?;
                         }
                         KeyCode::Char('p') => {
-                            if !app.selected_project_has_sessions() {
-                                app.push_selected_project();
+                            // Check if a session is selected (Sessions view) or project is selected (Projects view)
+                            if app.get_selected_session_index().is_some() {
+                                // Session selected: pause it
+                                app.pause_selected();
                                 app.refresh_sessions().await?;
                             } else {
-                                app.status_message = Some("Cannot push: project has active sessions. Stop the project first.".to_string());
+                                // Project selected: create push session
+                                if !app.selected_project_has_sessions() {
+                                    app.push_selected_project();
+                                    app.refresh_sessions().await?;
+                                } else {
+                                    app.status_message = Some("Cannot push: project has active sessions. Stop the project first.".to_string());
+                                }
                             }
+                        }
+                        KeyCode::Char('u') => {
+                            // Resume selected session
+                            app.resume_selected();
+                            app.refresh_sessions().await?;
                         }
                         KeyCode::Char(' ') => {
                             app.toggle_pause_selected();

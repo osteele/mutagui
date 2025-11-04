@@ -207,6 +207,9 @@ impl MutagenClient {
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         // Parse the JSON output
+        // Note: The mutagen template '{{json .}}' outputs a JSON array: [{session1}, {session2}, ...]
+        // This is NOT JSONL format (one object per line). The entire output is a single JSON array.
+        // See: https://mutagen.io/documentation/introduction/templates
         let sessions: Vec<SyncSession> = if stdout.trim().is_empty() {
             Vec::new()
         } else {

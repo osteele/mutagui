@@ -138,7 +138,7 @@ impl App {
         }
     }
 
-    fn get_selected_session_index(&self) -> Option<usize> {
+    pub fn get_selected_session_index(&self) -> Option<usize> {
         if self.selected_index >= self.projects.len() {
             Some(self.selected_index - self.projects.len())
         } else {
