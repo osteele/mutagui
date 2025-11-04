@@ -8,14 +8,15 @@ use std::time::Duration;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileState {
     pub kind: String,
-    pub digest: String,
+    #[serde(default)]
+    pub digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Change {
     pub path: String,
-    pub old: FileState,
-    pub new: FileState,
+    pub old: Option<FileState>,
+    pub new: Option<FileState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,5 +362,87 @@ impl MutagenClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_conflict_with_digest() {
+        // Test case: Real file conflict with digest field present
+        let json = r#"{
+            "root": "test.txt",
+            "alphaChanges": [{
+                "path": "test.txt",
+                "old": null,
+                "new": {
+                    "kind": "file",
+                    "digest": "fee7d500607ccbc550c97bd094ddfd2d5f170d0b"
+                }
+            }],
+            "betaChanges": [{
+                "path": "test.txt",
+                "old": null,
+                "new": {
+                    "kind": "file",
+                    "digest": "2dec8677cc6572dd75622e977dcf0e929238f7c0"
+                }
+            }]
+        }"#;
+
+        let conflict: Conflict =
+            serde_json::from_str(json).expect("Failed to parse conflict with digest");
+
+        assert_eq!(conflict.root, "test.txt");
+        assert_eq!(conflict.alpha_changes.len(), 1);
+        assert_eq!(conflict.beta_changes.len(), 1);
+
+        let alpha_change = &conflict.alpha_changes[0];
+        assert_eq!(alpha_change.path, "test.txt");
+        assert!(alpha_change.old.is_none());
+
+        let alpha_new = alpha_change.new.as_ref().unwrap();
+        assert_eq!(alpha_new.kind, "file");
+        assert_eq!(
+            alpha_new.digest.as_ref().unwrap(),
+            "fee7d500607ccbc550c97bd094ddfd2d5f170d0b"
+        );
+    }
+
+    #[test]
+    fn test_parse_conflict_without_digest() {
+        // Test case: Directory or untracked file without digest
+        let json = r#"{
+            "root": "config",
+            "alphaChanges": [{
+                "path": "config",
+                "old": null,
+                "new": null
+            }],
+            "betaChanges": [{
+                "path": "config/mutagen/mutagen-cool30.yml.lock",
+                "old": null,
+                "new": {
+                    "kind": "untracked"
+                }
+            }]
+        }"#;
+
+        let conflict: Conflict =
+            serde_json::from_str(json).expect("Failed to parse conflict without digest");
+
+        assert_eq!(conflict.root, "config");
+        assert_eq!(conflict.alpha_changes.len(), 1);
+        assert_eq!(conflict.beta_changes.len(), 1);
+
+        let beta_change = &conflict.beta_changes[0];
+        assert_eq!(beta_change.path, "config/mutagen/mutagen-cool30.yml.lock");
+        assert!(beta_change.old.is_none());
+
+        let beta_new = beta_change.new.as_ref().unwrap();
+        assert_eq!(beta_new.kind, "untracked");
+        assert!(beta_new.digest.is_none()); // No digest for untracked files
     }
 }

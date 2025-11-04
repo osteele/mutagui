@@ -8,7 +8,7 @@ use anyhow::Result;
 use app::App;
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -68,6 +68,13 @@ async fn run_app<B: ratatui::backend::Backend>(
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
                 Event::Key(key) => {
+                    // Handle Ctrl-C for graceful quit (before other key handlers)
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        app.quit();
+                    }
+
                     match key.code {
                         KeyCode::Char('q') => {
                             app.quit();

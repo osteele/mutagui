@@ -17,6 +17,17 @@ fn truncate_digest(digest: &str) -> &str {
     }
 }
 
+/// Format a FileState for display, handling None (deleted/new files) and Some cases.
+fn format_file_state(state: &Option<crate::mutagen::FileState>) -> String {
+    match state {
+        Some(fs) => match &fs.digest {
+            Some(digest) => format!("{} ({})", truncate_digest(digest), fs.kind),
+            None => fs.kind.clone(),
+        },
+        None => "-".to_string(),
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -512,23 +523,22 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
                                     Style::default().fg(app.color_scheme.session_alpha_fg),
                                 ),
                             ]));
+
+                            // Format the change description, handling optional FileState
+                            let old_str = format_file_state(&change.old);
+                            let new_str = format_file_state(&change.new);
+
                             lines.push(Line::from(vec![
                                 Span::raw("      "),
                                 Span::styled(
-                                    truncate_digest(&change.old.digest),
+                                    old_str,
                                     Style::default().fg(app.color_scheme.session_status_fg),
                                 ),
                                 Span::raw(" → "),
                                 Span::styled(
-                                    truncate_digest(&change.new.digest),
+                                    new_str,
                                     Style::default().fg(app.color_scheme.session_status_fg),
                                 ),
-                                Span::raw(" ("),
-                                Span::styled(
-                                    &change.new.kind,
-                                    Style::default().fg(app.color_scheme.session_status_fg),
-                                ),
-                                Span::raw(")"),
                             ]));
                         }
                     }
@@ -548,23 +558,22 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
                                     Style::default().fg(app.color_scheme.session_beta_fg),
                                 ),
                             ]));
+
+                            // Format the change description, handling optional FileState
+                            let old_str = format_file_state(&change.old);
+                            let new_str = format_file_state(&change.new);
+
                             lines.push(Line::from(vec![
                                 Span::raw("      "),
                                 Span::styled(
-                                    truncate_digest(&change.old.digest),
+                                    old_str,
                                     Style::default().fg(app.color_scheme.session_status_fg),
                                 ),
                                 Span::raw(" → "),
                                 Span::styled(
-                                    truncate_digest(&change.new.digest),
+                                    new_str,
                                     Style::default().fg(app.color_scheme.session_status_fg),
                                 ),
-                                Span::raw(" ("),
-                                Span::styled(
-                                    &change.new.kind,
-                                    Style::default().fg(app.color_scheme.session_status_fg),
-                                ),
-                                Span::raw(")"),
                             ]));
                         }
                     }

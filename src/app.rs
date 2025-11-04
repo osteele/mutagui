@@ -23,6 +23,7 @@ pub struct App {
     pub project_dir: Option<PathBuf>,
     pub session_display_mode: SessionDisplayMode,
     pub viewing_conflicts: bool,
+    pub has_refresh_error: bool, // Track if last refresh failed to prevent error loops
 }
 
 impl App {
@@ -39,6 +40,7 @@ impl App {
             project_dir,
             session_display_mode: SessionDisplayMode::ShowLastRefresh,
             viewing_conflicts: false,
+            has_refresh_error: false,
         }
     }
 
@@ -82,7 +84,9 @@ impl App {
                             correlate_projects_with_sessions(project_files, &self.sessions);
                     }
                     Err(e) => {
-                        eprintln!("Warning: Failed to discover project files: {}", e);
+                        // Note: Error is silently ignored here as project discovery is optional
+                        // The app continues to work without project correlation
+                        let _ = e; // Explicit acknowledgment of ignored error
                     }
                 }
 
@@ -93,15 +97,16 @@ impl App {
 
                 self.last_refresh = Some(Local::now());
                 self.status_message = Some("Sessions refreshed".to_string());
+                self.has_refresh_error = false; // Clear error flag on success
                 Ok(())
             }
             Err(e) => {
                 // Display error to user but don't crash the UI
                 // Transient CLI failures (missing binary, timeouts) should not tear down the terminal
-                self.status_message = Some(format!("Error refreshing sessions: {}", e));
+                self.status_message = Some(format!("Error: {} (press 'r' to retry)", e));
+                self.has_refresh_error = true; // Set error flag to prevent auto-refresh loop
 
-                // Log error for debugging but return Ok to keep the UI running
-                eprintln!("Warning: Failed to refresh sessions: {}", e);
+                // Error is displayed in the UI status bar, no need for stderr output
                 Ok(())
             }
         }
@@ -431,6 +436,12 @@ impl App {
 
     pub fn should_auto_refresh(&self) -> bool {
         const AUTO_REFRESH_INTERVAL_SECS: i64 = 3;
+
+        // Don't auto-refresh if the last refresh resulted in an error
+        // User must manually retry with 'r' to clear the error state
+        if self.has_refresh_error {
+            return false;
+        }
 
         match self.last_refresh {
             Some(last) => {
