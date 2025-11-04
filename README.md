@@ -104,6 +104,42 @@ The `--project-dir` option specifies where to start searching for `mutagen.yml` 
 | `Space` | Toggle pause on selected item |
 | `q` | Quit application |
 
+## Configuration Files
+
+The application automatically discovers `mutagen.yml` project files to help you manage your sync sessions. Understanding where these files are searched can help you organize your projects effectively.
+
+### Search Locations
+
+Starting from the base directory (current directory by default, or specified with `--project-dir`), the application searches in the following order:
+
+1. **Base directory patterns:**
+   - `mutagen.yml`, `mutagen-*.yml`
+   - `.mutagen.yml`, `.mutagen-*.yml` (hidden variants)
+
+2. **Subdirectories:**
+   - `mutagen/*.yml`, `.mutagen/*.yml`
+   - `config/*.yml`, `conf/*.yml`
+
+3. **Parent directories:**
+   - Walks up the directory tree to filesystem root or home directory
+   - Checks for `mutagen/`, `.mutagen/`, `config/`, `conf/` subdirectories
+
+4. **User configuration directories:**
+   - `~/.config/mutagen/projects/*.yml`
+   - `~/.mutagen/projects/*.yml`
+
+### Supported File Naming Patterns
+
+- `mutagen.yml` - Standard project configuration file
+- `mutagen-<target>.yml` - Target-specific configurations (e.g., `mutagen-studio.yml`, `mutagen-cool30.yml`)
+- `.mutagen.yml` and `.mutagen-<target>.yml` - Hidden variants of the above
+
+This naming scheme allows you to maintain multiple Mutagen configurations in the same directory for different sync targets.
+
+### Performance Note
+
+The file discovery uses non-recursive glob patterns for fast startup. Deep directory traversal with `**/` patterns is avoided to prevent scanning thousands of files unnecessarily.
+
 ## Display
 
 The TUI has two view modes (toggle with Tab):
@@ -229,87 +265,9 @@ The application will create a temporary session named `<session-name>-push` with
 - If multiple sessions are defined and one or more are active → uses the first active session (alphabetically)
 - If multiple sessions are defined and none are active → uses the first session alphabetically
 
-## Development
+## Contributing
 
-### Building
-
-```bash
-just build        # Release build
-just build-debug  # Debug build
-```
-
-### Running
-
-```bash
-just run          # Run in debug mode
-just run-release  # Run optimized version
-```
-
-### Testing
-
-```bash
-just test         # Run tests
-just check        # Run format check, lint, and tests
-```
-
-### Code Quality
-
-```bash
-just format       # Format code
-just lint         # Run clippy
-just fix          # Auto-fix formatting and linting issues
-```
-
-## Architecture
-
-The application is structured into several modules:
-
-- `main.rs`: Entry point and event loop with auto-refresh
-- `app.rs`: Application state management and view mode handling
-- `mutagen.rs`: Mutagen CLI integration and data models
-- `project.rs`: Project file discovery, parsing, and session correlation
-- `theme.rs`: Color scheme detection and management
-- `ui.rs`: TUI rendering with ratatui (sessions and projects views)
-
-### Dependencies
-
-- **ratatui**: Terminal UI framework
-- **crossterm**: Cross-platform terminal manipulation
-- **tokio**: Async runtime
-- **serde**: Serialization framework (JSON)
-- **serde_yaml**: YAML parsing for mutagen.yml files
-- **glob**: Pattern matching for file discovery
-- **clap**: Command-line argument parsing
-- **anyhow**: Error handling
-- **chrono**: Date and time handling
-- **terminal-light**: Terminal background detection for theme adaptation
-
-## Notes
-
-- The application automatically refreshes every 3 seconds to show live updates
-- Terminal background is detected once at startup to choose appropriate color scheme (light/dark)
-- The application polls Mutagen CLI commands to get session information
-- All operations that modify sessions automatically refresh the session list
-- The application requires that `mutagen` command is available in PATH
-
-### Project File Discovery
-
-The application searches for `mutagen.yml` files starting from the current directory (or the directory specified with `--project-dir`):
-
-**Search locations:**
-- Base directory: `mutagen.yml`, `mutagen-*.yml`, `.mutagen.yml`, `.mutagen-*.yml`
-- Subdirectories: `mutagen/*.yml`, `.mutagen/*.yml`, `config/*.yml`, `conf/*.yml`
-- Parent directories: Walks up to filesystem root or home, checking for `mutagen/`, `.mutagen/`, `config/`, `conf/` subdirectories
-- User config: `~/.config/mutagen/projects/*.yml`, `~/.mutagen/projects/*.yml`
-
-**Supported naming patterns:**
-- `mutagen.yml` - Standard project file
-- `mutagen-<target>.yml` - Target-specific configurations (e.g., `mutagen-studio.yml`, `mutagen-cool30.yml`)
-- `.mutagen.yml` and `.mutagen-<target>.yml` - Hidden variants
-
-This allows you to have multiple Mutagen configurations in the same directory for different sync targets.
-
-**Performance:** The search uses non-recursive patterns for fast startup. No `**/` glob patterns are used to avoid scanning thousands of files.
+Interested in contributing? See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, architecture details, and guidelines.
 
 ## License
 
