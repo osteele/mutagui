@@ -96,8 +96,13 @@ impl App {
                 Ok(())
             }
             Err(e) => {
-                self.status_message = Some(format!("Error: {}", e));
-                Err(e)
+                // Display error to user but don't crash the UI
+                // Transient CLI failures (missing binary, timeouts) should not tear down the terminal
+                self.status_message = Some(format!("Error refreshing sessions: {}", e));
+
+                // Log error for debugging but return Ok to keep the UI running
+                eprintln!("Warning: Failed to refresh sessions: {}", e);
+                Ok(())
             }
         }
     }

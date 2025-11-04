@@ -307,14 +307,21 @@ pub fn correlate_projects_with_sessions(
         for session in sessions {
             let session_name_matches = file.sessions.contains_key(&session.name);
 
+            // Normalize session paths once for efficiency
+            let session_alpha_normalized = normalize_path(&session.alpha.path);
+            let session_beta_normalized = normalize_path(&session.beta.path);
+
+            // Check if any session definition in the project file matches this running session
             let alpha_path_matches = file.sessions.values().any(|def| {
-                normalize_path(&def.alpha) == normalize_path(&session.alpha.path)
-                    || session.alpha.path.contains(&normalize_path(&def.alpha))
+                let def_alpha_normalized = normalize_path(&def.alpha);
+                // Use exact equality now that paths are canonicalized
+                def_alpha_normalized == session_alpha_normalized
             });
 
             let beta_path_matches = file.sessions.values().any(|def| {
-                normalize_path(&def.beta).contains(&normalize_path(&session.beta.path))
-                    || session.beta.path.contains(&normalize_path(&def.beta))
+                let def_beta_normalized = normalize_path(&def.beta);
+                // Use exact equality now that paths are canonicalized
+                def_beta_normalized == session_beta_normalized
             });
 
             if session_name_matches || (alpha_path_matches && beta_path_matches) {
@@ -331,6 +338,44 @@ pub fn correlate_projects_with_sessions(
     projects
 }
 
+/// Normalizes a path for comparison by resolving it to an absolute canonical path.
+/// Handles relative paths, strips trailing slashes, and resolves symlinks.
+/// Returns the original path string if canonicalization fails (e.g., for remote paths).
 fn normalize_path(path: &str) -> String {
-    path.trim_end_matches('/').to_string()
+    // Remote paths (host:path format) cannot be canonicalized locally
+    if path.contains(':') {
+        return path.trim_end_matches('/').to_string();
+    }
+
+    // Try to canonicalize the path
+    match std::fs::canonicalize(path) {
+        Ok(canonical) => {
+            // Convert to string, preserving the path format
+            canonical
+                .to_string_lossy()
+                .trim_end_matches('/')
+                .trim_end_matches('\\')
+                .to_string()
+        }
+        Err(_) => {
+            // If canonicalization fails (path doesn't exist), try to resolve relative paths manually
+            let path_buf = PathBuf::from(path);
+            if path_buf.is_relative() {
+                // Try to make it absolute relative to current directory
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| cwd.join(&path_buf).canonicalize().ok())
+                    .map(|p| {
+                        p.to_string_lossy()
+                            .trim_end_matches('/')
+                            .trim_end_matches('\\')
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| path.trim_end_matches('/').to_string())
+            } else {
+                // Already absolute, just normalize
+                path.trim_end_matches('/').to_string()
+            }
+        }
+    }
 }

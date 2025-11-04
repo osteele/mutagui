@@ -7,6 +7,16 @@ use ratatui::{
     Frame,
 };
 
+/// Safely truncate a digest string to 8 characters, or return the whole string if shorter.
+/// Prevents panics when Mutagen returns unexpectedly short digest values.
+fn truncate_digest(digest: &str) -> &str {
+    if digest.len() >= 8 {
+        &digest[..8]
+    } else {
+        digest
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -505,12 +515,12 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
                             lines.push(Line::from(vec![
                                 Span::raw("      "),
                                 Span::styled(
-                                    &change.old.digest[..8],
+                                    truncate_digest(&change.old.digest),
                                     Style::default().fg(app.color_scheme.session_status_fg),
                                 ),
                                 Span::raw(" → "),
                                 Span::styled(
-                                    &change.new.digest[..8],
+                                    truncate_digest(&change.new.digest),
                                     Style::default().fg(app.color_scheme.session_status_fg),
                                 ),
                                 Span::raw(" ("),
@@ -541,12 +551,12 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
                             lines.push(Line::from(vec![
                                 Span::raw("      "),
                                 Span::styled(
-                                    &change.old.digest[..8],
+                                    truncate_digest(&change.old.digest),
                                     Style::default().fg(app.color_scheme.session_status_fg),
                                 ),
                                 Span::raw(" → "),
                                 Span::styled(
-                                    &change.new.digest[..8],
+                                    truncate_digest(&change.new.digest),
                                     Style::default().fg(app.color_scheme.session_status_fg),
                                 ),
                                 Span::raw(" ("),
