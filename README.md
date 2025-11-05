@@ -92,17 +92,65 @@ The `--project-dir` option specifies where to start searching for `mutagen.yml` 
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Toggle between Sessions and Projects views |
+| `Tab` | Switch between Projects and Sessions areas |
 | `↑` / `k` | Move selection up |
 | `↓` / `j` | Move selection down |
+| `m` | Toggle display mode (show paths vs. last sync time) |
 | `r` | Refresh session list and projects |
-| `p` | Pause selected session (Sessions view) / Create push session (Projects view) |
+| `Enter` / `↵` | Edit selected project configuration file (Projects only) |
+| `s` | Start/stop selected project (Projects only) |
+| `p` | Pause selected session (Sessions) / Create push session (Projects) |
 | `u` | Resume selected session |
+| `Space` | Toggle pause/resume on selected item |
 | `f` | Flush selected session |
 | `t` | Terminate selected session |
-| `s` | Start/stop selected project |
-| `Space` | Toggle pause on selected item |
-| `q` | Quit application |
+| `c` | View conflicts for selected session |
+| `q` / `Ctrl-C` | Quit application |
+
+### Editor Integration
+
+When pressing `Enter` to edit a project file:
+
+**Editor Selection:**
+1. `$VISUAL` environment variable (if set)
+2. `$EDITOR` environment variable (if set)
+3. `vim` (default fallback)
+
+**Automatic GUI Detection:**
+
+The application automatically detects whether your editor is a GUI application or terminal-based and adjusts its behavior accordingly:
+
+- **GUI editors** (VS Code, Zed, Sublime Text, etc.): The TUI remains active in the background while your editor opens in a separate window. No terminal disruption.
+- **Terminal editors** (vim, nano, emacs, etc.): The TUI suspends and restores your terminal to normal mode, then resumes after you exit the editor.
+
+**Supported GUI Editors** (automatically detected):
+- VS Code (`code`, `code-insiders`)
+- Zed (`zed`)
+- Sublime Text (`subl`, `sublime`, `sublime_text`)
+- Atom (`atom`)
+- GNOME editors (`gedit`, `gnome-text-editor`)
+- KDE editors (`kate`, `kwrite`)
+- XFCE editors (`mousepad`, `xed`)
+- MATE editor (`pluma`)
+- macOS editors (`bbedit`, `textmate`, `textedit`, `xcode`)
+- GUI Vim variants (`macvim`, `gvim`)
+
+**Supported Terminal Editors** (automatically detected):
+- vim, vi, nvim
+- nano, pico
+- emacs, emacsclient
+- helix, hx
+- kakoune, kak
+- micro, joe, jed
+- ed, ex
+
+**SSH Behavior**: When connected via SSH, the application assumes terminal editors only (GUI editors won't work).
+
+**Manual Override**: If detection is incorrect for your editor, set:
+```bash
+export MUTAGUI_EDITOR_IS_GUI=true   # Force GUI behavior
+export MUTAGUI_EDITOR_IS_GUI=false  # Force terminal behavior
+```
 
 ## Configuration Files
 

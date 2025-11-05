@@ -15,6 +15,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -24,6 +25,95 @@ struct Cli {
     /// Directory to search for mutagen project files (default: current directory)
     #[arg(short = 'd', long, value_name = "DIR")]
     project_dir: Option<PathBuf>,
+}
+
+fn get_editor() -> String {
+    std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vim".to_string())
+}
+
+fn is_gui_editor(editor_path: &str) -> bool {
+    // Priority 1: User override (always respect this)
+    if let Ok(val) = std::env::var("MUTAGUI_EDITOR_IS_GUI") {
+        return val == "1" || val.to_lowercase() == "true";
+    }
+
+    // Priority 2: SSH detection (GUI won't work over SSH)
+    if std::env::var("SSH_CLIENT").is_ok() || std::env::var("SSH_TTY").is_ok() {
+        return false;
+    }
+
+    // Priority 3: Extract editor binary name
+    let editor_name = PathBuf::from(editor_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(editor_path)
+        .to_lowercase();
+
+    // Priority 4: Known GUI editors
+    let gui_editors = [
+        "code",
+        "code-insiders", // VS Code
+        "zed",           // Zed
+        "subl",
+        "sublime",
+        "sublime_text", // Sublime Text
+        "atom",         // Atom
+        "gedit",
+        "gnome-text-editor", // GNOME
+        "kwrite",
+        "kate", // KDE
+        "mousepad",
+        "xed",   // XFCE
+        "pluma", // MATE
+        "bbedit",
+        "textmate", // macOS commercial
+        "textedit", // macOS built-in
+        "xcode",    // Xcode
+        "macvim",
+        "gvim", // GUI vim
+    ];
+
+    if gui_editors.iter().any(|&e| editor_name.contains(e)) {
+        return true;
+    }
+
+    // Priority 5: Known terminal editors (explicit negative check)
+    let terminal_editors = [
+        "vim",
+        "vi",
+        "nvim",
+        "nano",
+        "emacs",
+        "emacsclient",
+        "ed",
+        "ex",
+        "joe",
+        "jed",
+        "pico",
+        "micro",
+        "helix",
+        "hx",
+        "kakoune",
+        "kak",
+    ];
+
+    if terminal_editors.iter().any(|&e| editor_name.contains(e)) {
+        return false;
+    }
+
+    // Priority 6: Platform-specific path checks
+    #[cfg(target_os = "macos")]
+    {
+        if editor_path.contains(".app/Contents/MacOS/") || editor_path.starts_with("/Applications/")
+        {
+            return true;
+        }
+    }
+
+    // Priority 7: Default to terminal editor (safe for TUI)
+    false
 }
 
 #[tokio::main]
@@ -87,6 +177,68 @@ async fn run_app<B: ratatui::backend::Backend>(
                         }
                         KeyCode::Char('m') => {
                             app.toggle_session_display();
+                        }
+                        KeyCode::Enter => {
+                            // Edit selected project file
+                            if let Some(project_idx) = app.get_selected_project_index() {
+                                if let Some(project) = app.projects.get(project_idx) {
+                                    let editor = get_editor();
+                                    let file_path = &project.file.path;
+                                    let is_gui = is_gui_editor(&editor);
+
+                                    let status = if is_gui {
+                                        // GUI editor - don't touch terminal, just spawn
+                                        Command::new(&editor).arg(file_path).status()
+                                    } else {
+                                        // Terminal editor - suspend TUI
+                                        disable_raw_mode()?;
+                                        execute!(
+                                            io::stdout(),
+                                            LeaveAlternateScreen,
+                                            DisableMouseCapture
+                                        )?;
+                                        terminal.show_cursor()?;
+
+                                        let status = Command::new(&editor).arg(file_path).status();
+
+                                        // Restore TUI
+                                        enable_raw_mode()?;
+                                        execute!(
+                                            io::stdout(),
+                                            EnterAlternateScreen,
+                                            EnableMouseCapture
+                                        )?;
+                                        terminal.hide_cursor()?;
+
+                                        status
+                                    };
+
+                                    // Handle editor result
+                                    match status {
+                                        Ok(exit_status) if exit_status.success() => {
+                                            app.status_message = Some(format!(
+                                                "Edited: {}",
+                                                project.file.display_name()
+                                            ));
+                                            app.refresh_sessions().await?;
+                                        }
+                                        Ok(exit_status) => {
+                                            app.status_message = Some(format!(
+                                                "Editor exited with code: {}",
+                                                exit_status.code().unwrap_or(-1)
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            app.status_message =
+                                                Some(format!("Failed to launch editor: {}", e));
+                                        }
+                                    }
+                                }
+                            } else {
+                                app.status_message = Some(
+                                    "Select a project to edit its configuration file".to_string(),
+                                );
+                            }
                         }
                         KeyCode::Char('s') => {
                             app.toggle_selected_project();

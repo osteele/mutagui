@@ -410,6 +410,11 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     if is_project_selected {
         // Project-specific commands
         spans.extend(vec![
+            Span::styled("↵", Style::default().fg(app.color_scheme.help_key_fg)),
+            Span::styled(
+                " Edit | ",
+                Style::default().fg(app.color_scheme.help_text_fg),
+            ),
             Span::styled("s", Style::default().fg(app.color_scheme.help_key_fg)),
             Span::styled(
                 " Start/Stop | ",

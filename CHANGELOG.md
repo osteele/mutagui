@@ -1,0 +1,38 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- Enter key to edit project configuration files in your preferred editor
+- Tab key navigation to switch between Projects and Sessions areas
+- Push session functionality (`p` key on projects)
+- Conflict viewing (`c` key)
+- VCS ignore flag support
+- Project management commands
+  - `s` key to start/stop projects
+  - `Space` key to pause/resume projects and sessions
+  - `u` key to resume sessions
+- Display mode toggle (`m` key)
+  - Switch between showing paths and last sync time
+
+### Changed
+- Session start/push operations now terminate all existing sessions first (prevents conflicts)
+- UI layout dynamically adjusts when projects or sessions are empty
+- Projects now displayed before sessions in the list
+- Path normalization improved for better session matching
+- Home directory paths shortened with `~` in UI
+
+### Fixed
+- UI no longer crashes on transient Mutagen CLI errors
+- Prevent refresh error loops (manual retry required after errors)
+- Cross-platform timeout handling for Mutagen commands
+- Handle Windows drive letters correctly in path normalization
+
+## [0.1.0] - Initial Release
+
+Initial release
