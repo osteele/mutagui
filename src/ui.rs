@@ -395,6 +395,11 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             " Nav | ",
             Style::default().fg(app.color_scheme.help_text_fg),
         ),
+        Span::styled("Tab", Style::default().fg(app.color_scheme.help_key_fg)),
+        Span::styled(
+            " Switch Area | ",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        ),
         Span::styled("m", Style::default().fg(app.color_scheme.help_key_fg)),
         Span::styled(
             " Mode | ",

@@ -82,6 +82,9 @@ async fn run_app<B: ratatui::backend::Backend>(
                         KeyCode::Char('r') => {
                             app.refresh_sessions().await?;
                         }
+                        KeyCode::Tab => {
+                            app.toggle_focus_area();
+                        }
                         KeyCode::Char('m') => {
                             app.toggle_session_display();
                         }

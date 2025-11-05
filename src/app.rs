@@ -11,6 +11,12 @@ pub enum SessionDisplayMode {
     ShowLastRefresh,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusArea {
+    Projects,
+    Sessions,
+}
+
 pub struct App {
     pub sessions: Vec<SyncSession>,
     pub projects: Vec<Project>,
@@ -24,6 +30,9 @@ pub struct App {
     pub session_display_mode: SessionDisplayMode,
     pub viewing_conflicts: bool,
     pub has_refresh_error: bool, // Track if last refresh failed to prevent error loops
+    pub focus_area: FocusArea,
+    pub last_project_index: Option<usize>,
+    pub last_session_index: Option<usize>,
 }
 
 impl App {
@@ -41,6 +50,9 @@ impl App {
             session_display_mode: SessionDisplayMode::ShowLastRefresh,
             viewing_conflicts: false,
             has_refresh_error: false,
+            focus_area: FocusArea::Projects,
+            last_project_index: None,
+            last_session_index: None,
         }
     }
 
@@ -95,6 +107,13 @@ impl App {
                     self.selected_index = total_items - 1;
                 }
 
+                // Update focus area based on current selection
+                if self.selected_index < self.projects.len() {
+                    self.focus_area = FocusArea::Projects;
+                } else if !self.sessions.is_empty() {
+                    self.focus_area = FocusArea::Sessions;
+                }
+
                 self.last_refresh = Some(Local::now());
                 self.status_message = Some("Sessions refreshed".to_string());
                 self.has_refresh_error = false; // Clear error flag on success
@@ -126,6 +145,93 @@ impl App {
                 self.selected_index = total_items - 1;
             } else {
                 self.selected_index -= 1;
+            }
+        }
+    }
+
+    pub fn toggle_focus_area(&mut self) {
+        // Save current position in current area
+        if self.get_selected_project_index().is_some() {
+            self.last_project_index = Some(self.selected_index);
+        } else if self.get_selected_session_index().is_some() {
+            self.last_session_index = self.get_selected_session_index();
+        }
+
+        // Toggle focus area
+        self.focus_area = match self.focus_area {
+            FocusArea::Projects => FocusArea::Sessions,
+            FocusArea::Sessions => FocusArea::Projects,
+        };
+
+        // Determine new selection index
+        match self.focus_area {
+            FocusArea::Projects => {
+                if self.projects.is_empty() {
+                    // No projects, stay in sessions
+                    self.focus_area = FocusArea::Sessions;
+                    return;
+                }
+
+                // Try to restore last position
+                if let Some(last_idx) = self.last_project_index {
+                    if last_idx < self.projects.len() {
+                        self.selected_index = last_idx;
+                        return;
+                    }
+                }
+
+                // Try to find related project for current session
+                if let Some(session_idx) = self.last_session_index {
+                    if let Some(session) = self.sessions.get(session_idx) {
+                        // Find project that has this session
+                        for (proj_idx, project) in self.projects.iter().enumerate() {
+                            if project
+                                .active_sessions
+                                .iter()
+                                .any(|s| s.name == session.name)
+                            {
+                                self.selected_index = proj_idx;
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // Default to first project
+                self.selected_index = 0;
+            }
+            FocusArea::Sessions => {
+                if self.sessions.is_empty() {
+                    // No sessions, stay in projects
+                    self.focus_area = FocusArea::Projects;
+                    return;
+                }
+
+                // Try to restore last position
+                if let Some(last_idx) = self.last_session_index {
+                    if last_idx < self.sessions.len() {
+                        self.selected_index = self.projects.len() + last_idx;
+                        return;
+                    }
+                }
+
+                // Try to find related session for current project
+                if let Some(proj_idx) = self.last_project_index {
+                    if let Some(project) = self.projects.get(proj_idx) {
+                        if let Some(active_session) = project.active_sessions.first() {
+                            // Find this session in the sessions list
+                            for (sess_idx, session) in self.sessions.iter().enumerate() {
+                                if session.name == active_session.name {
+                                    self.selected_index = self.projects.len() + sess_idx;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Default to first session
+                self.selected_index = self.projects.len();
             }
         }
     }
@@ -256,6 +362,15 @@ impl App {
         if self.selected_project_has_sessions() {
             self.stop_selected_project();
         } else {
+            // Before starting, terminate all sessions associated with this project
+            if let Some(project_idx) = self.get_selected_project_index() {
+                if let Some(project) = self.projects.get(project_idx) {
+                    // Terminate all active sessions for this project
+                    for session in &project.active_sessions {
+                        let _ = self.mutagen_client.terminate_session(&session.identifier);
+                    }
+                }
+            }
             self.start_selected_project();
         }
     }
@@ -263,6 +378,11 @@ impl App {
     pub fn push_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
+                // Terminate all active sessions for this project before creating push session
+                for session in &project.active_sessions {
+                    let _ = self.mutagen_client.terminate_session(&session.identifier);
+                }
+
                 // Determine which session to push - prefer active sessions, then alphabetical order
                 let selected_session = if project.file.sessions.len() == 1 {
                     // Only one session - use it
