@@ -243,19 +243,18 @@ fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
     paths.push(format!("{}/.mutagen.yml", start_dir_str));
     paths.push(format!("{}/.mutagen-*.yml", start_dir_str));
 
-    // Base directory subdirectories
+    // Base directory subdirectories - common config locations
     paths.push(format!("{}/mutagen/*.yml", start_dir_str));
     paths.push(format!("{}/.mutagen/*.yml", start_dir_str));
-    paths.push(format!("{}/config/*.yml", start_dir_str));
     paths.push(format!("{}/config/mutagen/*.yml", start_dir_str));
-    paths.push(format!("{}/conf/*.yml", start_dir_str));
     paths.push(format!("{}/conf/mutagen/*.yml", start_dir_str));
 
-    // Recursive search for mutagen.yml files in subdirectories
-    // Limit depth to avoid scanning too many files (e.g., node_modules, .git, etc.)
-    // Pattern: up to 3 levels deep (*/**/mutagen.yml covers */mutagen.yml, */*/mutagen.yml, */*/*/mutagen.yml)
-    paths.push(format!("{}/**/mutagen.yml", start_dir_str));
-    paths.push(format!("{}/**/mutagen-*.yml", start_dir_str));
+    // Direct children only (1 level deep) - for multi-project directories like ~/code
+    // This allows finding projects in subdirectories without deep traversal
+    paths.push(format!("{}/*/mutagen.yml", start_dir_str));
+    paths.push(format!("{}/*/mutagen-*.yml", start_dir_str));
+    paths.push(format!("{}/*/.mutagen.yml", start_dir_str));
+    paths.push(format!("{}/*/.mutagen-*.yml", start_dir_str));
 
     // Walk up directory tree looking for project subdirectories
     let walk_start = if let Some(base) = base_dir {
