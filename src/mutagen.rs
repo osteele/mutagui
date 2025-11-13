@@ -5,6 +5,14 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
 
+#[derive(Debug, Clone, Default)]
+pub enum SyncTime {
+    Never, // Brand new session, no syncs yet
+    #[default]
+    Unknown, // Pre-existing session, sync history unknown
+    At(DateTime<Local>), // Observed sync at this time
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileState {
     pub kind: String,
@@ -89,12 +97,12 @@ pub struct SyncSession {
     pub mode: Option<String>,
     #[serde(rename = "creationTime")]
     pub creation_time: Option<String>,
-    #[serde(rename = "successfulCycles", default)]
-    pub successful_cycles: u64,
+    #[serde(rename = "successfulCycles")]
+    pub successful_cycles: Option<u64>,
     #[serde(default)]
     pub conflicts: Vec<Conflict>,
-    #[serde(skip)]
-    pub last_sync_time: Option<DateTime<Local>>,
+    #[serde(skip, default)]
+    pub sync_time: SyncTime,
 }
 
 impl SyncSession {
@@ -115,10 +123,10 @@ impl SyncSession {
     }
 
     pub fn time_ago_display(&self) -> String {
-        match self.last_sync_time {
-            Some(sync_time) => {
+        match &self.sync_time {
+            SyncTime::At(sync_time) => {
                 let now = Local::now();
-                let duration = now.signed_duration_since(sync_time);
+                let duration = now.signed_duration_since(*sync_time);
                 let seconds = duration.num_seconds();
 
                 if seconds < 60 {
@@ -140,7 +148,8 @@ impl SyncSession {
                     format!("{} days ago", days)
                 }
             }
-            None => "never".to_string(),
+            SyncTime::Unknown => "unknown".to_string(),
+            SyncTime::Never => "never".to_string(),
         }
     }
 }
@@ -289,6 +298,7 @@ impl MutagenClient {
         Ok(())
     }
 
+    #[allow(dead_code)] // Prefer individual session termination for broader compatibility
     pub fn terminate_project(&self, project_file: &Path) -> Result<()> {
         let mut cmd = Command::new("mutagen");
         cmd.arg("project")
@@ -306,6 +316,7 @@ impl MutagenClient {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used in future for project-level pause operations
     pub fn pause_project(&self, project_file: &Path) -> Result<()> {
         let mut cmd = Command::new("mutagen");
         cmd.arg("project").arg("pause").arg("-f").arg(project_file);
@@ -320,6 +331,7 @@ impl MutagenClient {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used in future for project-level resume operations
     pub fn resume_project(&self, project_file: &Path) -> Result<()> {
         let mut cmd = Command::new("mutagen");
         cmd.arg("project").arg("resume").arg("-f").arg(project_file);
@@ -332,6 +344,43 @@ impl MutagenClient {
         }
 
         Ok(())
+    }
+
+    /// Ensures a directory exists on an endpoint (local or remote).
+    /// For remote endpoints (format: `host:path`), uses SSH to create the directory.
+    /// For local paths, uses std::fs::create_dir_all.
+    pub fn ensure_endpoint_directory_exists(&self, endpoint: &str) -> Result<()> {
+        // Check if this is a Windows drive letter path (e.g., C:\, D:\)
+        let is_windows_drive = endpoint.len() >= 2
+            && endpoint.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && endpoint.chars().nth(1) == Some(':');
+
+        // Remote paths (host:path format) - but exclude Windows drive letters
+        if endpoint.contains(':') && !is_windows_drive {
+            // Parse as remote: host:path
+            if let Some((host, path)) = endpoint.split_once(':') {
+                // Use SSH to create directory on remote host
+                let cmd = Command::new("ssh")
+                    .arg(host)
+                    .arg(format!("mkdir -p {}", path))
+                    .output();
+
+                match cmd {
+                    Ok(output) if output.status.success() => Ok(()),
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        anyhow::bail!("Failed to create remote directory {}: {}", endpoint, stderr)
+                    }
+                    Err(e) => anyhow::bail!("Failed to run ssh to create directory {}: {}", endpoint, e),
+                }
+            } else {
+                anyhow::bail!("Invalid remote endpoint format: {}", endpoint)
+            }
+        } else {
+            // Local path - use std::fs
+            std::fs::create_dir_all(endpoint)
+                .with_context(|| format!("Failed to create local directory {}", endpoint))
+        }
     }
 
     pub fn create_push_session(

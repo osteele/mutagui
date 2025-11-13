@@ -11,6 +11,7 @@ pub struct ColorScheme {
     pub status_paused_fg: Color,
     pub selection_bg: Color,
     pub status_message_fg: Color,
+    pub status_error_fg: Color,
     pub help_key_fg: Color,
     pub help_text_fg: Color,
 }
@@ -27,6 +28,7 @@ impl ColorScheme {
             status_paused_fg: Color::Yellow,
             selection_bg: Color::DarkGray,
             status_message_fg: Color::Yellow,
+            status_error_fg: Color::Red,
             help_key_fg: Color::Cyan,
             help_text_fg: Color::White,
         }
@@ -43,6 +45,7 @@ impl ColorScheme {
             status_paused_fg: Color::Rgb(184, 134, 11), // Dark goldenrod
             selection_bg: Color::Rgb(200, 200, 200),  // Light gray
             status_message_fg: Color::Rgb(184, 134, 11), // Dark goldenrod
+            status_error_fg: Color::Red,
             help_key_fg: Color::Blue,
             help_text_fg: Color::Black,
         }

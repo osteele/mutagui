@@ -143,12 +143,14 @@ impl ProjectFile {
 
     pub fn display_name(&self) -> String {
         if let Some(target) = &self.target_name {
-            format!("mutagen-{}.yml", target)
+            format!("mutagen-{}", target)
         } else {
             self.path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("mutagen.yml")
+                .strip_suffix(".yml")
+                .unwrap_or("mutagen")
                 .to_string()
         }
     }
@@ -310,11 +312,18 @@ pub fn correlate_projects_with_sessions(
         let mut active_sessions = Vec::new();
 
         for session in sessions {
-            let session_name_matches = file.sessions.contains_key(&session.name);
+            // Check if session name matches a key in the project file
+            // Also check if session name is a push variant (ends with "-push") of a project session
+            let session_name_matches = file.sessions.contains_key(&session.name)
+                || (session.name.ends_with("-push")
+                    && file
+                        .sessions
+                        .contains_key(&session.name[..session.name.len() - 5]));
 
             // Normalize session paths once for efficiency
-            let session_alpha_normalized = normalize_path(&session.alpha.path);
-            let session_beta_normalized = normalize_path(&session.beta.path);
+            // Use display_path() to include host prefix (e.g., "cool30:/path") for remote endpoints
+            let session_alpha_normalized = normalize_path(&session.alpha.display_path());
+            let session_beta_normalized = normalize_path(&session.beta.display_path());
 
             // Check if any session definition in the project file matches this running session
             let alpha_path_matches = file.sessions.values().any(|def| {
@@ -333,6 +342,9 @@ pub fn correlate_projects_with_sessions(
                 active_sessions.push(session.clone());
             }
         }
+
+        // Sort active sessions alphabetically by name
+        active_sessions.sort_by(|a, b| a.name.cmp(&b.name));
 
         projects.push(Project {
             file,

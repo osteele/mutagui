@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -28,13 +28,60 @@ fn format_file_state(state: &Option<crate::mutagen::FileState>) -> String {
     }
 }
 
+/// Calculate the height needed for the status area based on message length.
+/// Returns a value between 3 and 7 (min 1 line of text, max 5 lines of text, plus 2 for borders).
+fn calculate_status_height(status_text: &str, available_width: u16) -> u16 {
+    // Account for borders and padding (2 for left/right borders, 2 for internal padding)
+    let content_width = if available_width > 4 {
+        (available_width - 4) as usize
+    } else {
+        1
+    };
+
+    // Use textwrap to calculate how many lines the text will wrap to
+    let wrapped_lines = textwrap::wrap(status_text, content_width);
+    let line_count = wrapped_lines.len() as u16;
+
+    // Add 2 for borders, clamp between 3 (min) and 7 (max: 5 lines of content + 2 borders)
+    (line_count + 2).max(3).min(7)
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
+    // Build status text to calculate required height
+    let mut status_text = app
+        .status_message
+        .as_ref()
+        .map(|msg| msg.text().to_string())
+        .unwrap_or_else(|| "Ready".to_string());
+
+    if let Some(last_refresh) = app.last_refresh {
+        let refresh_info = format!(" | Last refresh: {}", last_refresh.format("%H:%M:%S"));
+        status_text.push_str(&refresh_info);
+    }
+
+    // Check if text will be clipped (more than 5 lines of content)
+    let content_width = if f.area().width > 4 {
+        (f.area().width - 4) as usize
+    } else {
+        1
+    };
+    let wrapped_lines = textwrap::wrap(&status_text, content_width);
+    let will_be_clipped = wrapped_lines.len() > 5;
+
+    if will_be_clipped {
+        // Add ellipsis indicator to the status text
+        status_text.push_str(" ...");
+    }
+
+    // Calculate dynamic status height based on message length (clamped to 3-7 lines)
+    let status_height = calculate_status_height(&status_text, f.area().width);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(status_height),
             Constraint::Length(3),
         ])
         .split(f.area());
@@ -87,6 +134,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.viewing_conflicts {
         draw_conflict_detail(f, app);
     }
+
+    // Draw blocking operation modal if one is active
+    if let Some(blocking_op) = &app.blocking_op {
+        draw_blocking_modal(f, app, blocking_op);
+    }
 }
 
 fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
@@ -125,6 +177,20 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(title, area);
 }
 
+/// Get the display name for a session, with project prefix if applicable
+fn get_session_display_name(app: &App, session: &crate::mutagen::SyncSession) -> String {
+    // Find which project owns this session
+    for project in &app.projects {
+        if project.active_sessions.iter().any(|s| s.name == session.name) {
+            // Session belongs to this project - format as "project-name > session-name"
+            let project_name = project.file.display_name();
+            return format!("{} > {}", project_name, session.name);
+        }
+    }
+    // Session doesn't belong to any project - just show the name
+    session.name.clone()
+}
+
 fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .sessions
@@ -138,13 +204,15 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                 app.color_scheme.status_running_fg
             };
 
+            let display_name = get_session_display_name(app, session);
+
             let mut spans = vec![
                 Span::styled(
                     format!("{} ", status_icon),
                     Style::default().fg(status_color),
                 ),
                 Span::styled(
-                    format!("{:<18}", session.name),
+                    format!("{:<30}", display_name), // Increased width to accommodate "project > session"
                     Style::default()
                         .fg(app.color_scheme.session_name_fg)
                         .add_modifier(Modifier::BOLD),
@@ -371,7 +439,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let mut status_text = app
         .status_message
         .as_ref()
-        .map(|s| s.to_string())
+        .map(|msg| msg.text().to_string())
         .unwrap_or_else(|| "Ready".to_string());
 
     if let Some(last_refresh) = app.last_refresh {
@@ -379,9 +447,21 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         status_text.push_str(&refresh_info);
     }
 
+    // Choose color based on message severity
+    let fg_color = app
+        .status_message
+        .as_ref()
+        .map(|msg| match msg {
+            crate::app::StatusMessage::Error(_) => app.color_scheme.status_error_fg,
+            crate::app::StatusMessage::Warning(_) => app.color_scheme.status_paused_fg,
+            crate::app::StatusMessage::Info(_) => app.color_scheme.status_message_fg,
+        })
+        .unwrap_or(app.color_scheme.status_message_fg);
+
     let status = Paragraph::new(status_text)
-        .style(Style::default().fg(app.color_scheme.status_message_fg))
-        .block(Block::default().borders(Borders::ALL).title("Status"));
+        .style(Style::default().fg(fg_color))
+        .block(Block::default().borders(Borders::ALL).title("Status"))
+        .wrap(Wrap { trim: true });
 
     f.render_widget(status, area);
 }
@@ -473,6 +553,51 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"));
 
     f.render_widget(help, area);
+}
+
+fn draw_blocking_modal(f: &mut Frame, app: &App, blocking_op: &crate::app::BlockingOperation) {
+    use ratatui::layout::{Alignment, Margin};
+    use ratatui::widgets::Clear;
+
+    // Create a centered overlay area (50% width, 7 lines height)
+    let area = f.area();
+    let overlay_width = (area.width as f32 * 0.5) as u16;
+    let overlay_height = 7;
+    let overlay_x = (area.width - overlay_width) / 2;
+    let overlay_y = (area.height - overlay_height) / 2;
+
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_width,
+        height: overlay_height,
+    };
+
+    // Clear the background (prevents visual artifacts)
+    f.render_widget(Clear, overlay_area);
+
+    // Render the modal block
+    let modal_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.color_scheme.help_key_fg))
+        .style(Style::default().bg(app.color_scheme.selection_bg));
+
+    f.render_widget(modal_block, overlay_area);
+
+    // Inner area for content
+    let inner_area = overlay_area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+
+    // Static hourglass indicator (spinner won't animate since we only draw once)
+    let message = format!("⏳ {}\n\nPlease wait...", blocking_op.message);
+
+    let paragraph = Paragraph::new(message)
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(app.color_scheme.status_message_fg));
+
+    f.render_widget(paragraph, inner_area);
 }
 
 fn draw_conflict_detail(f: &mut Frame, app: &App) {

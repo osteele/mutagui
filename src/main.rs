@@ -5,7 +5,7 @@ mod theme;
 mod ui;
 
 use anyhow::Result;
-use app::App;
+use app::{App, StatusMessage};
 use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
@@ -216,32 +216,45 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     // Handle editor result
                                     match status {
                                         Ok(exit_status) if exit_status.success() => {
-                                            app.status_message = Some(format!(
+                                            app.status_message = Some(StatusMessage::info(format!(
                                                 "Edited: {}",
                                                 project.file.display_name()
-                                            ));
+                                            )));
                                             app.refresh_sessions().await?;
                                         }
                                         Ok(exit_status) => {
-                                            app.status_message = Some(format!(
+                                            app.status_message = Some(StatusMessage::warning(format!(
                                                 "Editor exited with code: {}",
                                                 exit_status.code().unwrap_or(-1)
-                                            ));
+                                            )));
                                         }
                                         Err(e) => {
                                             app.status_message =
-                                                Some(format!("Failed to launch editor: {}", e));
+                                                Some(StatusMessage::error(format!("Failed to launch editor: {}", e)));
                                         }
                                     }
                                 }
                             } else {
-                                app.status_message = Some(
-                                    "Select a project to edit its configuration file".to_string(),
-                                );
+                                app.status_message = Some(StatusMessage::info(
+                                    "Select a project to edit its configuration file"
+                                ));
                             }
                         }
                         KeyCode::Char('s') => {
+                            // Show blocking modal for start/stop project operations (10s timeout)
+                            let operation_name = if app.selected_project_has_sessions() {
+                                "Stopping project..."
+                            } else {
+                                "Starting project..."
+                            };
+
+                            app.blocking_op = Some(app::BlockingOperation {
+                                message: operation_name.to_string(),
+                            });
+                            terminal.draw(|f| ui::draw(f, app))?;
+
                             app.toggle_selected_project();
+                            app.blocking_op = None;
                             app.refresh_sessions().await?;
                         }
                         KeyCode::Char('p') => {
@@ -253,10 +266,29 @@ async fn run_app<B: ratatui::backend::Backend>(
                             } else {
                                 // Project selected: create push session
                                 if !app.selected_project_has_sessions() {
+                                    // Count sessions to create for proper plural message
+                                    let session_count = if let Some(project_idx) = app.get_selected_project_index() {
+                                        app.projects.get(project_idx).map(|p| p.file.sessions.len()).unwrap_or(0)
+                                    } else {
+                                        0
+                                    };
+                                    let message = if session_count == 1 {
+                                        "Creating push session...".to_string()
+                                    } else {
+                                        format!("Creating {} push sessions...", session_count)
+                                    };
+
+                                    // Show blocking modal before operation
+                                    app.blocking_op = Some(app::BlockingOperation {
+                                        message,
+                                    });
+                                    terminal.draw(|f| ui::draw(f, app))?;
+
                                     app.push_selected_project();
+                                    app.blocking_op = None;
                                     app.refresh_sessions().await?;
                                 } else {
-                                    app.status_message = Some("Cannot push: project has active sessions. Stop the project first.".to_string());
+                                    app.status_message = Some(StatusMessage::warning("Cannot push: project has active sessions. Stop the project first."));
                                 }
                             }
                         }
@@ -266,7 +298,36 @@ async fn run_app<B: ratatui::backend::Backend>(
                             app.refresh_sessions().await?;
                         }
                         KeyCode::Char(' ') => {
-                            app.toggle_pause_selected();
+                            // Check if operating on project (multiple sessions) or single session
+                            if app.get_selected_project_index().is_some() && app.get_selected_session_index().is_none() {
+                                // Project selected: show blocking modal for pause/resume all
+                                let has_running = if let Some(project_idx) = app.get_selected_project_index() {
+                                    if let Some(project) = app.projects.get(project_idx) {
+                                        project.active_sessions.iter().any(|s| !s.paused)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                };
+
+                                let operation_name = if has_running {
+                                    "Pausing all sessions..."
+                                } else {
+                                    "Resuming all sessions..."
+                                };
+
+                                app.blocking_op = Some(app::BlockingOperation {
+                                    message: operation_name.to_string(),
+                                });
+                                terminal.draw(|f| ui::draw(f, app))?;
+
+                                app.toggle_pause_selected();
+                                app.blocking_op = None;
+                            } else {
+                                // Single session: no modal needed (quick operation)
+                                app.toggle_pause_selected();
+                            }
                             app.refresh_sessions().await?;
                         }
                         KeyCode::Up | KeyCode::Char('k') => {

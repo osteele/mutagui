@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prevent refresh error loops (manual retry required after errors)
 - Cross-platform timeout handling for Mutagen commands
 - Handle Windows drive letters correctly in path normalization
+- Project-session correlation for remote endpoints (fixes "no running sessions" display when remote sessions are active)
+- Improved error message when attempting to start an already-running project
 
 ## [0.1.0] - Initial Release
 

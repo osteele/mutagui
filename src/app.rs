@@ -17,12 +17,62 @@ pub enum FocusArea {
     Sessions,
 }
 
+#[derive(Debug, Clone)]
+pub enum StatusMessage {
+    Info(String),
+    Warning(String),
+    Error(String),
+}
+
+impl StatusMessage {
+    pub fn info(msg: impl Into<String>) -> Self {
+        Self::Info(msg.into())
+    }
+
+    pub fn warning(msg: impl Into<String>) -> Self {
+        Self::Warning(msg.into())
+    }
+
+    pub fn error(msg: impl Into<String>) -> Self {
+        Self::Error(msg.into())
+    }
+
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Info(s) | Self::Warning(s) | Self::Error(s) => s,
+        }
+    }
+
+    #[allow(dead_code)] // Part of public API, may be used in future
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Error(_))
+    }
+}
+
+/// Get the display name for a session to use for sorting.
+/// If the session belongs to a project, returns "project-name > session-name".
+/// Otherwise, returns just the session name.
+fn get_session_sort_key(session: &SyncSession, projects: &[Project]) -> String {
+    for project in projects {
+        if project.active_sessions.iter().any(|s| s.name == session.name) {
+            let project_name = project.file.display_name();
+            return format!("{} > {}", project_name, session.name);
+        }
+    }
+    session.name.clone()
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockingOperation {
+    pub message: String,
+}
+
 pub struct App {
     pub sessions: Vec<SyncSession>,
     pub projects: Vec<Project>,
     pub selected_index: usize,
     pub should_quit: bool,
-    pub status_message: Option<String>,
+    pub status_message: Option<StatusMessage>,
     pub mutagen_client: MutagenClient,
     pub color_scheme: ColorScheme,
     pub last_refresh: Option<DateTime<Local>>,
@@ -33,6 +83,7 @@ pub struct App {
     pub focus_area: FocusArea,
     pub last_project_index: Option<usize>,
     pub last_session_index: Option<usize>,
+    pub blocking_op: Option<BlockingOperation>,
 }
 
 impl App {
@@ -53,6 +104,7 @@ impl App {
             focus_area: FocusArea::Projects,
             last_project_index: None,
             last_session_index: None,
+            blocking_op: None,
         }
     }
 
@@ -62,6 +114,7 @@ impl App {
                 let now = Local::now();
 
                 // Track when successfulCycles changes to detect actual sync activity
+                let is_first_refresh = self.sessions.is_empty();
                 let new_sessions: Vec<_> = sessions
                     .into_iter()
                     .map(|mut new_session| {
@@ -71,29 +124,51 @@ impl App {
                             .iter()
                             .find(|s| s.identifier == new_session.identifier)
                         {
-                            // If successfulCycles increased, update last_sync_time
-                            if new_session.successful_cycles > old_session.successful_cycles {
-                                new_session.last_sync_time = Some(now);
+                            // If successfulCycles increased, we observed a sync
+                            let new_cycles = new_session.successful_cycles.unwrap_or(0);
+                            let old_cycles = old_session.successful_cycles.unwrap_or(0);
+                            if new_cycles > old_cycles {
+                                new_session.sync_time = crate::mutagen::SyncTime::At(now);
                             } else {
-                                // Keep the previous last_sync_time
-                                new_session.last_sync_time = old_session.last_sync_time;
+                                // Keep the previous sync_time
+                                new_session.sync_time = old_session.sync_time.clone();
                             }
                         } else {
-                            // New session - set last_sync_time if it has already synced
-                            if new_session.successful_cycles > 0 {
-                                new_session.last_sync_time = Some(now);
+                            // Newly discovered session
+                            if is_first_refresh {
+                                // First refresh: all sessions pre-existed, sync history unknown
+                                new_session.sync_time = crate::mutagen::SyncTime::Unknown;
+                            } else {
+                                // Session discovered after first refresh
+                                let cycles = new_session.successful_cycles.unwrap_or(0);
+                                new_session.sync_time = if cycles > 0 {
+                                    crate::mutagen::SyncTime::At(now)
+                                } else {
+                                    crate::mutagen::SyncTime::Never
+                                };
                             }
                         }
                         new_session
                     })
                     .collect();
 
-                self.sessions = new_sessions;
+                // Sort sessions alphabetically by name
+                let mut sorted_sessions = new_sessions;
+                sorted_sessions.sort_by(|a, b| a.name.cmp(&b.name));
+
+                self.sessions = sorted_sessions;
 
                 match discover_project_files(self.project_dir.as_deref()) {
                     Ok(project_files) => {
                         self.projects =
                             correlate_projects_with_sessions(project_files, &self.sessions);
+
+                        // Re-sort sessions by display name (including project prefix) now that we have project correlation
+                        self.sessions.sort_by(|a, b| {
+                            let a_key = get_session_sort_key(a, &self.projects);
+                            let b_key = get_session_sort_key(b, &self.projects);
+                            a_key.cmp(&b_key)
+                        });
                     }
                     Err(e) => {
                         // Note: Error is silently ignored here as project discovery is optional
@@ -115,14 +190,28 @@ impl App {
                 }
 
                 self.last_refresh = Some(Local::now());
-                self.status_message = Some("Sessions refreshed".to_string());
+                // Only show "Sessions refreshed" if there's no status message, or if showing the temporary "Creating push session..." message
+                // Preserve all other messages (errors, warnings, and operation success messages like "Created push session: xyz")
+                let should_show_refreshed = self.status_message.is_none()
+                    || self
+                        .status_message
+                        .as_ref()
+                        .map(|msg| msg.text() == "Creating push session...")
+                        .unwrap_or(false);
+
+                if should_show_refreshed {
+                    self.status_message = Some(StatusMessage::info("Sessions refreshed"));
+                }
                 self.has_refresh_error = false; // Clear error flag on success
                 Ok(())
             }
             Err(e) => {
                 // Display error to user but don't crash the UI
                 // Transient CLI failures (missing binary, timeouts) should not tear down the terminal
-                self.status_message = Some(format!("Error: {} (press 'r' to retry)", e));
+                self.status_message = Some(StatusMessage::error(format!(
+                    "Error: {} (press 'r' to retry)",
+                    e
+                )));
                 self.has_refresh_error = true; // Set error flag to prevent auto-refresh loop
 
                 // Error is displayed in the UI status bar, no need for stderr output
@@ -266,10 +355,10 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match self.mutagen_client.pause_session(&session.identifier) {
                     Ok(_) => {
-                        self.status_message = Some(format!("Paused session: {}", session.name));
+                        self.status_message = Some(StatusMessage::info(format!("Paused session: {}", session.name)));
                     }
                     Err(e) => {
-                        self.status_message = Some(format!("Failed to pause: {}", e));
+                        self.status_message = Some(StatusMessage::error(format!("Failed to pause: {}", e)));
                     }
                 }
             }
@@ -281,10 +370,10 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match self.mutagen_client.resume_session(&session.identifier) {
                     Ok(_) => {
-                        self.status_message = Some(format!("Resumed session: {}", session.name));
+                        self.status_message = Some(StatusMessage::info(format!("Resumed session: {}", session.name)));
                     }
                     Err(e) => {
-                        self.status_message = Some(format!("Failed to resume: {}", e));
+                        self.status_message = Some(StatusMessage::error(format!("Failed to resume: {}", e)));
                     }
                 }
             }
@@ -296,7 +385,7 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match self.mutagen_client.terminate_session(&session.identifier) {
                     Ok(_) => {
-                        self.status_message = Some(format!("Terminated session: {}", session.name));
+                        self.status_message = Some(StatusMessage::info(format!("Terminated session: {}", session.name)));
                         self.sessions.remove(idx);
                         let total_items = self.sessions.len() + self.projects.len();
                         if self.selected_index >= total_items && total_items > 0 {
@@ -304,7 +393,7 @@ impl App {
                         }
                     }
                     Err(e) => {
-                        self.status_message = Some(format!("Failed to terminate: {}", e));
+                        self.status_message = Some(StatusMessage::error(format!("Failed to terminate: {}", e)));
                     }
                 }
             }
@@ -316,10 +405,10 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match self.mutagen_client.flush_session(&session.identifier) {
                     Ok(_) => {
-                        self.status_message = Some(format!("Flushed session: {}", session.name));
+                        self.status_message = Some(StatusMessage::info(format!("Flushed session: {}", session.name)));
                     }
                     Err(e) => {
-                        self.status_message = Some(format!("Failed to flush: {}", e));
+                        self.status_message = Some(StatusMessage::error(format!("Failed to flush: {}", e)));
                     }
                 }
             }
@@ -332,10 +421,18 @@ impl App {
                 match self.mutagen_client.start_project(&project.file.path) {
                     Ok(_) => {
                         self.status_message =
-                            Some(format!("Started project: {}", project.file.display_name()));
+                            Some(StatusMessage::info(format!("Started project: {}", project.file.display_name())));
                     }
                     Err(e) => {
-                        self.status_message = Some(format!("Failed to start project: {}", e));
+                        let error_msg = e.to_string();
+                        // If project is already running, suggest using 'x' to stop it first
+                        if error_msg.contains("project already running") {
+                            self.status_message = Some(StatusMessage::error(
+                                "Project already running. Press 'x' to stop it first, then refresh with 'r'.".to_string()
+                            ));
+                        } else {
+                            self.status_message = Some(StatusMessage::error(format!("Failed to start project: {}", e)));
+                        }
                     }
                 }
             }
@@ -345,14 +442,32 @@ impl App {
     pub fn stop_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                match self.mutagen_client.terminate_project(&project.file.path) {
-                    Ok(_) => {
-                        self.status_message =
-                            Some(format!("Stopped project: {}", project.file.display_name()));
+                // Terminate all active sessions for this project individually
+                // (works for both project-managed and manually created sessions)
+                let mut terminated_count = 0;
+                let mut errors = Vec::new();
+
+                for session in &project.active_sessions {
+                    match self.mutagen_client.terminate_session(&session.identifier) {
+                        Ok(_) => terminated_count += 1,
+                        Err(e) => errors.push(e.to_string()),
                     }
-                    Err(e) => {
-                        self.status_message = Some(format!("Failed to stop project: {}", e));
-                    }
+                }
+
+                if terminated_count > 0 && errors.is_empty() {
+                    self.status_message = Some(StatusMessage::info(format!(
+                        "Stopped {} session(s) for project: {}",
+                        terminated_count,
+                        project.file.display_name()
+                    )));
+                } else if terminated_count > 0 {
+                    self.status_message = Some(StatusMessage::warning(format!(
+                        "Stopped {} session(s), {} failed",
+                        terminated_count,
+                        errors.len()
+                    )));
+                } else {
+                    self.status_message = Some(StatusMessage::error("Failed to stop any sessions"));
                 }
             }
         }
@@ -378,51 +493,47 @@ impl App {
     pub fn push_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                // Terminate all active sessions for this project before creating push session
+                // Terminate all active sessions for this project before creating push sessions
                 for session in &project.active_sessions {
                     let _ = self.mutagen_client.terminate_session(&session.identifier);
                 }
 
-                // Determine which session to push - prefer active sessions, then alphabetical order
-                let selected_session = if project.file.sessions.len() == 1 {
-                    // Only one session - use it
-                    project.file.sessions.iter().next()
-                } else if !project.active_sessions.is_empty() {
-                    // Multiple sessions, but some are active - find the first active one alphabetically
-                    let active_names: std::collections::HashSet<_> = project
-                        .active_sessions
-                        .iter()
-                        .map(|s| s.name.as_str())
-                        .collect();
+                if project.file.sessions.is_empty() {
+                    self.status_message = Some(StatusMessage::error("No sessions defined in project file"));
+                    return;
+                }
 
-                    let mut sorted_sessions: Vec<_> = project.file.sessions.iter().collect();
-                    sorted_sessions.sort_by_key(|(name, _)| *name);
+                // Create push sessions for ALL sessions in the project
+                let mut created_count = 0;
+                let mut errors: Vec<(String, String)> = Vec::new();
 
-                    sorted_sessions
-                        .into_iter()
-                        .find(|(name, _)| active_names.contains(name.as_str()))
-                } else {
-                    // Multiple sessions, none active - use first alphabetically
-                    let mut sorted_sessions: Vec<_> = project.file.sessions.iter().collect();
-                    sorted_sessions.sort_by_key(|(name, _)| *name);
-                    sorted_sessions.into_iter().next()
-                };
+                // Get defaults for ignore patterns
+                let defaults_value = project
+                    .file
+                    .defaults
+                    .as_ref()
+                    .and_then(|defaults| serde_yaml::to_value(defaults).ok());
 
-                if let Some((session_name, session_def)) = selected_session {
+                for (session_name, session_def) in &project.file.sessions {
                     let push_name = format!("{}-push", session_name);
 
                     // Extract ignore patterns, merging with defaults
-                    let defaults_value = project
-                        .file
-                        .defaults
-                        .as_ref()
-                        .and_then(|defaults| serde_yaml::to_value(defaults).ok());
                     let ignore_patterns = session_def.get_ignore_patterns(defaults_value.as_ref());
                     let ignore = if ignore_patterns.is_empty() {
                         None
                     } else {
                         Some(ignore_patterns)
                     };
+
+                    // Ensure both endpoints' parent directories exist before creating session
+                    if let Err(e) = self.mutagen_client.ensure_endpoint_directory_exists(&session_def.alpha) {
+                        errors.push((session_name.clone(), format!("Failed to create alpha directory: {}", e)));
+                        continue;
+                    }
+                    if let Err(e) = self.mutagen_client.ensure_endpoint_directory_exists(&session_def.beta) {
+                        errors.push((session_name.clone(), format!("Failed to create beta directory: {}", e)));
+                        continue;
+                    }
 
                     match self.mutagen_client.create_push_session(
                         &push_name,
@@ -431,32 +542,79 @@ impl App {
                         ignore.as_deref(),
                     ) {
                         Ok(_) => {
-                            self.status_message =
-                                Some(format!("Created push session: {}", push_name));
+                            created_count += 1;
                         }
                         Err(e) => {
-                            self.status_message =
-                                Some(format!("Failed to create push session: {}", e));
+                            errors.push((session_name.clone(), e.to_string()));
                         }
                     }
-                } else {
-                    self.status_message = Some("No sessions defined in project file".to_string());
                 }
+
+                // Set status message based on results
+                if created_count > 0 && errors.is_empty() {
+                    self.status_message = Some(StatusMessage::info(format!(
+                        "Created {} push session(s)",
+                        created_count
+                    )));
+                } else if created_count > 0 && !errors.is_empty() {
+                    self.status_message = Some(StatusMessage::warning(format!(
+                        "Created {} push session(s), {} failed",
+                        created_count,
+                        errors.len()
+                    )));
+                } else {
+                    // All failed
+                    let error_msg = if errors.len() == 1 {
+                        format!("Failed to create push session: {}", errors[0].1)
+                    } else {
+                        format!("Failed to create {} push sessions", errors.len())
+                    };
+                    self.status_message = Some(StatusMessage::error(error_msg));
+                }
+            } else {
+                self.status_message = Some(StatusMessage::error("Failed to get selected project"));
             }
+        } else {
+            self.status_message = Some(StatusMessage::error("No project selected"));
         }
     }
 
     pub fn pause_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                match self.mutagen_client.pause_project(&project.file.path) {
-                    Ok(_) => {
-                        self.status_message =
-                            Some(format!("Paused project: {}", project.file.display_name()));
+                if project.active_sessions.is_empty() {
+                    self.status_message = Some(StatusMessage::info("No active sessions to pause"));
+                    return;
+                }
+
+                // Pause ALL active sessions individually
+                let mut paused_count = 0;
+                let mut errors: Vec<String> = Vec::new();
+
+                for session in &project.active_sessions {
+                    match self.mutagen_client.pause_session(&session.identifier) {
+                        Ok(_) => paused_count += 1,
+                        Err(e) => errors.push(format!("{}: {}", session.name, e)),
                     }
-                    Err(e) => {
-                        self.status_message = Some(format!("Failed to pause project: {}", e));
-                    }
+                }
+
+                // Set status message based on results
+                if paused_count > 0 && errors.is_empty() {
+                    self.status_message = Some(StatusMessage::info(format!(
+                        "Paused {} session(s)",
+                        paused_count
+                    )));
+                } else if paused_count > 0 && !errors.is_empty() {
+                    self.status_message = Some(StatusMessage::warning(format!(
+                        "Paused {} session(s), {} failed",
+                        paused_count,
+                        errors.len()
+                    )));
+                } else {
+                    self.status_message = Some(StatusMessage::error(format!(
+                        "Failed to pause {} session(s)",
+                        errors.len()
+                    )));
                 }
             }
         }
@@ -465,14 +623,39 @@ impl App {
     pub fn resume_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                match self.mutagen_client.resume_project(&project.file.path) {
-                    Ok(_) => {
-                        self.status_message =
-                            Some(format!("Resumed project: {}", project.file.display_name()));
+                if project.active_sessions.is_empty() {
+                    self.status_message = Some(StatusMessage::info("No active sessions to resume"));
+                    return;
+                }
+
+                // Resume ALL active sessions individually
+                let mut resumed_count = 0;
+                let mut errors: Vec<String> = Vec::new();
+
+                for session in &project.active_sessions {
+                    match self.mutagen_client.resume_session(&session.identifier) {
+                        Ok(_) => resumed_count += 1,
+                        Err(e) => errors.push(format!("{}: {}", session.name, e)),
                     }
-                    Err(e) => {
-                        self.status_message = Some(format!("Failed to resume project: {}", e));
-                    }
+                }
+
+                // Set status message based on results
+                if resumed_count > 0 && errors.is_empty() {
+                    self.status_message = Some(StatusMessage::info(format!(
+                        "Resumed {} session(s)",
+                        resumed_count
+                    )));
+                } else if resumed_count > 0 && !errors.is_empty() {
+                    self.status_message = Some(StatusMessage::warning(format!(
+                        "Resumed {} session(s), {} failed",
+                        resumed_count,
+                        errors.len()
+                    )));
+                } else {
+                    self.status_message = Some(StatusMessage::error(format!(
+                        "Failed to resume {} session(s)",
+                        errors.len()
+                    )));
                 }
             }
         }
@@ -492,7 +675,7 @@ impl App {
                 // Only pause/resume if project has active sessions
                 if project.active_sessions.is_empty() {
                     self.status_message =
-                        Some("Project has no active sessions. Use 's' to start.".to_string());
+                        Some(StatusMessage::info("Project has no active sessions. Use 's' to start."));
                     return;
                 }
 
@@ -516,13 +699,12 @@ impl App {
             SessionDisplayMode::ShowPaths => SessionDisplayMode::ShowLastRefresh,
             SessionDisplayMode::ShowLastRefresh => SessionDisplayMode::ShowPaths,
         };
-        self.status_message = Some(format!(
-            "Display mode: {}",
+        self.status_message = Some(StatusMessage::info(format!("Display mode: {}",
             match self.session_display_mode {
                 SessionDisplayMode::ShowPaths => "Paths",
                 SessionDisplayMode::ShowLastRefresh => "Last Sync Time",
             }
-        ));
+        )));
     }
 
     pub fn toggle_conflict_view(&mut self) {
@@ -532,16 +714,16 @@ impl App {
                     self.viewing_conflicts = !self.viewing_conflicts;
                     if self.viewing_conflicts {
                         self.status_message =
-                            Some(format!("Viewing conflicts for: {}", session.name));
+                            Some(StatusMessage::info(format!("Viewing conflicts for: {}", session.name)));
                     } else {
-                        self.status_message = Some("Closed conflict view".to_string());
+                        self.status_message = Some(StatusMessage::info("Closed conflict view"));
                     }
                 } else {
-                    self.status_message = Some("No conflicts in selected session".to_string());
+                    self.status_message = Some(StatusMessage::error("No conflicts in selected session"));
                 }
             }
         } else {
-            self.status_message = Some("Select a session to view conflicts".to_string());
+            self.status_message = Some(StatusMessage::error("Select a session to view conflicts"));
         }
     }
 
