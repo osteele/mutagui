@@ -1,7 +1,15 @@
 [package]
 name = "mutagui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
+authors = ["Oliver Steele <steele@osteele.com>"]
+description = "A terminal user interface for managing Mutagen sync sessions"
+readme = "README.md"
+homepage = "https://github.com/osteele/mutagui"
+repository = "https://github.com/osteele/mutagui"
+license = "MIT"
+keywords = ["mutagen", "tui", "sync", "terminal", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.29"

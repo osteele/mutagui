@@ -32,11 +32,17 @@ For more development tools, see: https://osteele.com/software/development-tools
 
 ## Installation
 
+### From crates.io
+
+```bash
+cargo install mutagui
+```
+
 ### From Source
 
 ```bash
 # Clone or navigate to the repository
-cd mutagen-gui
+cd mutagui
 
 # Build and install
 just install
