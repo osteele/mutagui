@@ -298,7 +298,6 @@ impl MutagenClient {
         Ok(())
     }
 
-    #[allow(dead_code)] // Prefer individual session termination for broader compatibility
     pub fn terminate_project(&self, project_file: &Path) -> Result<()> {
         let mut cmd = Command::new("mutagen");
         cmd.arg("project")
@@ -380,6 +379,22 @@ impl MutagenClient {
             // Local path - use std::fs
             std::fs::create_dir_all(endpoint)
                 .with_context(|| format!("Failed to create local directory {}", endpoint))
+        }
+    }
+
+    /// Checks if a project is currently running.
+    /// Returns true if the project is running, false otherwise.
+    pub fn is_project_running(&self, project_file: &Path) -> bool {
+        let mut cmd = Command::new("mutagen");
+        cmd.arg("project")
+            .arg("list")
+            .arg("-f")
+            .arg(project_file);
+
+        // Use a short timeout since this is just a status check
+        match execute_with_timeout(cmd, 3) {
+            Ok(output) => output.status.success(),
+            Err(_) => false, // Timeout or execution error means not running
         }
     }
 

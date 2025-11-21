@@ -424,69 +424,44 @@ impl App {
                             Some(StatusMessage::info(format!("Started project: {}", project.file.display_name())));
                     }
                     Err(e) => {
-                        let error_msg = e.to_string();
-                        // If project is already running, suggest using 'x' to stop it first
-                        if error_msg.contains("project already running") {
-                            self.status_message = Some(StatusMessage::error(
-                                "Project already running. Press 'x' to stop it first, then refresh with 'r'.".to_string()
-                            ));
-                        } else {
-                            self.status_message = Some(StatusMessage::error(format!("Failed to start project: {}", e)));
-                        }
+                        self.status_message = Some(StatusMessage::error(format!("Failed to start project: {}", e)));
                     }
-                }
-            }
-        }
-    }
-
-    pub fn stop_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_selected_project_index() {
-            if let Some(project) = self.projects.get(project_idx) {
-                // Terminate all active sessions for this project individually
-                // (works for both project-managed and manually created sessions)
-                let mut terminated_count = 0;
-                let mut errors = Vec::new();
-
-                for session in &project.active_sessions {
-                    match self.mutagen_client.terminate_session(&session.identifier) {
-                        Ok(_) => terminated_count += 1,
-                        Err(e) => errors.push(e.to_string()),
-                    }
-                }
-
-                if terminated_count > 0 && errors.is_empty() {
-                    self.status_message = Some(StatusMessage::info(format!(
-                        "Stopped {} session(s) for project: {}",
-                        terminated_count,
-                        project.file.display_name()
-                    )));
-                } else if terminated_count > 0 {
-                    self.status_message = Some(StatusMessage::warning(format!(
-                        "Stopped {} session(s), {} failed",
-                        terminated_count,
-                        errors.len()
-                    )));
-                } else {
-                    self.status_message = Some(StatusMessage::error("Failed to stop any sessions"));
                 }
             }
         }
     }
 
     pub fn toggle_selected_project(&mut self) {
-        if self.selected_project_has_sessions() {
-            self.stop_selected_project();
-        } else {
-            // Before starting, terminate all sessions associated with this project
-            if let Some(project_idx) = self.get_selected_project_index() {
-                if let Some(project) = self.projects.get(project_idx) {
-                    // Terminate all active sessions for this project
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                // Check actual project state, not just session existence
+                let is_running = self.mutagen_client.is_project_running(&project.file.path);
+
+                if is_running {
+                    // Project is running → terminate it
+                    match self.mutagen_client.terminate_project(&project.file.path) {
+                        Ok(_) => {
+                            self.status_message = Some(StatusMessage::info(format!(
+                                "Terminated project: {}",
+                                project.file.display_name()
+                            )));
+                        }
+                        Err(e) => {
+                            self.status_message = Some(StatusMessage::error(format!(
+                                "Failed to terminate project: {}",
+                                e
+                            )));
+                        }
+                    }
+                } else {
+                    // Project not running → start it
+                    // First terminate any lingering sessions that might interfere
                     for session in &project.active_sessions {
                         let _ = self.mutagen_client.terminate_session(&session.identifier);
                     }
+                    self.start_selected_project();
                 }
             }
-            self.start_selected_project();
         }
     }
 
