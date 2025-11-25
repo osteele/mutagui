@@ -1,20 +1,19 @@
+use crate::config::{Config, DisplayMode, ThemeMode};
 use crate::mutagen::{MutagenClient, SyncSession};
 use crate::project::{correlate_projects_with_sessions, discover_project_files, Project};
+use crate::selection::SelectionManager;
 use crate::theme::{detect_theme, ColorScheme};
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
 
+// Re-export FocusArea for external use (e.g., in ui.rs)
+pub use crate::selection::FocusArea;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionDisplayMode {
     ShowPaths,
     ShowLastRefresh,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusArea {
-    Projects,
-    Sessions,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +53,11 @@ impl StatusMessage {
 /// Otherwise, returns just the session name.
 fn get_session_sort_key(session: &SyncSession, projects: &[Project]) -> String {
     for project in projects {
-        if project.active_sessions.iter().any(|s| s.name == session.name) {
+        if project
+            .active_sessions
+            .iter()
+            .any(|s| s.name == session.name)
+        {
             let project_name = project.file.display_name();
             return format!("{} > {}", project_name, session.name);
         }
@@ -70,7 +73,7 @@ pub struct BlockingOperation {
 pub struct App {
     pub sessions: Vec<SyncSession>,
     pub projects: Vec<Project>,
-    pub selected_index: usize,
+    selection: SelectionManager,
     pub should_quit: bool,
     pub status_message: Option<StatusMessage>,
     pub mutagen_client: MutagenClient,
@@ -80,32 +83,51 @@ pub struct App {
     pub session_display_mode: SessionDisplayMode,
     pub viewing_conflicts: bool,
     pub has_refresh_error: bool, // Track if last refresh failed to prevent error loops
-    pub focus_area: FocusArea,
-    pub last_project_index: Option<usize>,
-    pub last_session_index: Option<usize>,
     pub blocking_op: Option<BlockingOperation>,
+    config: Config,
 }
 
 impl App {
     pub fn new(project_dir: Option<PathBuf>) -> Self {
+        // Load config (use defaults if file doesn't exist or has errors)
+        let config = Config::load().unwrap_or_default();
+
+        // Determine color scheme based on config theme setting
+        let color_scheme = match config.ui.theme {
+            ThemeMode::Auto => detect_theme(),
+            ThemeMode::Light => ColorScheme::light(),
+            ThemeMode::Dark => ColorScheme::dark(),
+        };
+
+        // Map config display mode to session display mode
+        let session_display_mode = match config.ui.default_display_mode {
+            DisplayMode::Paths => SessionDisplayMode::ShowPaths,
+            DisplayMode::LastRefresh => SessionDisplayMode::ShowLastRefresh,
+        };
+
         Self {
             sessions: Vec::new(),
             projects: Vec::new(),
-            selected_index: 0,
+            selection: SelectionManager::new(),
             should_quit: false,
             status_message: None,
             mutagen_client: MutagenClient::new(),
-            color_scheme: detect_theme(),
+            color_scheme,
             last_refresh: None,
             project_dir,
-            session_display_mode: SessionDisplayMode::ShowLastRefresh,
+            session_display_mode,
             viewing_conflicts: false,
             has_refresh_error: false,
-            focus_area: FocusArea::Projects,
-            last_project_index: None,
-            last_session_index: None,
             blocking_op: None,
+            config,
         }
+    }
+
+    // ============ Selection accessors (delegate to SelectionManager) ============
+
+    /// Get the raw selected index for UI rendering.
+    pub fn selected_index(&self) -> usize {
+        self.selection.raw_index()
     }
 
     pub async fn refresh_sessions(&mut self) -> Result<()> {
@@ -177,17 +199,9 @@ impl App {
                     }
                 }
 
-                let total_items = self.sessions.len() + self.projects.len();
-                if self.selected_index >= total_items && total_items > 0 {
-                    self.selected_index = total_items - 1;
-                }
-
-                // Update focus area based on current selection
-                if self.selected_index < self.projects.len() {
-                    self.focus_area = FocusArea::Projects;
-                } else if !self.sessions.is_empty() {
-                    self.focus_area = FocusArea::Sessions;
-                }
+                // Update selection manager with new list sizes (handles clamping and focus)
+                self.selection
+                    .update_sizes(self.projects.len(), self.sessions.len());
 
                 self.last_refresh = Some(Local::now());
                 // Only show "Sessions refreshed" if there's no status message, or if showing the temporary "Creating push session..." message
@@ -221,124 +235,63 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
-        let total_items = self.sessions.len() + self.projects.len();
-        if total_items > 0 {
-            self.selected_index = (self.selected_index + 1) % total_items;
-        }
+        self.selection.select_next();
     }
 
     pub fn select_previous(&mut self) {
-        let total_items = self.sessions.len() + self.projects.len();
-        if total_items > 0 {
-            if self.selected_index == 0 {
-                self.selected_index = total_items - 1;
-            } else {
-                self.selected_index -= 1;
-            }
-        }
+        self.selection.select_previous();
     }
 
     pub fn toggle_focus_area(&mut self) {
-        // Save current position in current area
-        if self.get_selected_project_index().is_some() {
-            self.last_project_index = Some(self.selected_index);
-        } else if self.get_selected_session_index().is_some() {
-            self.last_session_index = self.get_selected_session_index();
-        }
+        // Save current context for related item lookup
+        let last_session_idx = self.selection.selected_session();
+        let last_project_idx = self.selection.selected_project();
 
-        // Toggle focus area
-        self.focus_area = match self.focus_area {
-            FocusArea::Projects => FocusArea::Sessions,
-            FocusArea::Sessions => FocusArea::Projects,
-        };
+        self.selection.toggle_focus();
 
-        // Determine new selection index
-        match self.focus_area {
+        // Try to find related items after basic toggle
+        match self.selection.focus_area() {
             FocusArea::Projects => {
-                if self.projects.is_empty() {
-                    // No projects, stay in sessions
-                    self.focus_area = FocusArea::Sessions;
-                    return;
-                }
-
-                // Try to restore last position
-                if let Some(last_idx) = self.last_project_index {
-                    if last_idx < self.projects.len() {
-                        self.selected_index = last_idx;
-                        return;
-                    }
-                }
-
-                // Try to find related project for current session
-                if let Some(session_idx) = self.last_session_index {
+                // If we just came from a session, try to find its parent project
+                if let Some(session_idx) = last_session_idx {
                     if let Some(session) = self.sessions.get(session_idx) {
-                        // Find project that has this session
                         for (proj_idx, project) in self.projects.iter().enumerate() {
                             if project
                                 .active_sessions
                                 .iter()
                                 .any(|s| s.name == session.name)
                             {
-                                self.selected_index = proj_idx;
+                                self.selection.select_project(proj_idx);
                                 return;
                             }
                         }
                     }
                 }
-
-                // Default to first project
-                self.selected_index = 0;
             }
             FocusArea::Sessions => {
-                if self.sessions.is_empty() {
-                    // No sessions, stay in projects
-                    self.focus_area = FocusArea::Projects;
-                    return;
-                }
-
-                // Try to restore last position
-                if let Some(last_idx) = self.last_session_index {
-                    if last_idx < self.sessions.len() {
-                        self.selected_index = self.projects.len() + last_idx;
-                        return;
-                    }
-                }
-
-                // Try to find related session for current project
-                if let Some(proj_idx) = self.last_project_index {
+                // If we just came from a project, try to find its first session
+                if let Some(proj_idx) = last_project_idx {
                     if let Some(project) = self.projects.get(proj_idx) {
                         if let Some(active_session) = project.active_sessions.first() {
-                            // Find this session in the sessions list
                             for (sess_idx, session) in self.sessions.iter().enumerate() {
                                 if session.name == active_session.name {
-                                    self.selected_index = self.projects.len() + sess_idx;
+                                    self.selection.select_session(sess_idx);
                                     return;
                                 }
                             }
                         }
                     }
                 }
-
-                // Default to first session
-                self.selected_index = self.projects.len();
             }
         }
     }
 
     pub fn get_selected_project_index(&self) -> Option<usize> {
-        if self.selected_index < self.projects.len() {
-            Some(self.selected_index)
-        } else {
-            None
-        }
+        self.selection.selected_project()
     }
 
     pub fn get_selected_session_index(&self) -> Option<usize> {
-        if self.selected_index >= self.projects.len() {
-            Some(self.selected_index - self.projects.len())
-        } else {
-            None
-        }
+        self.selection.selected_session()
     }
 
     pub fn selected_project_has_sessions(&self) -> bool {
@@ -355,10 +308,14 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match self.mutagen_client.pause_session(&session.identifier) {
                     Ok(_) => {
-                        self.status_message = Some(StatusMessage::info(format!("Paused session: {}", session.name)));
+                        self.status_message = Some(StatusMessage::info(format!(
+                            "Paused session: {}",
+                            session.name
+                        )));
                     }
                     Err(e) => {
-                        self.status_message = Some(StatusMessage::error(format!("Failed to pause: {}", e)));
+                        self.status_message =
+                            Some(StatusMessage::error(format!("Failed to pause: {}", e)));
                     }
                 }
             }
@@ -370,10 +327,14 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match self.mutagen_client.resume_session(&session.identifier) {
                     Ok(_) => {
-                        self.status_message = Some(StatusMessage::info(format!("Resumed session: {}", session.name)));
+                        self.status_message = Some(StatusMessage::info(format!(
+                            "Resumed session: {}",
+                            session.name
+                        )));
                     }
                     Err(e) => {
-                        self.status_message = Some(StatusMessage::error(format!("Failed to resume: {}", e)));
+                        self.status_message =
+                            Some(StatusMessage::error(format!("Failed to resume: {}", e)));
                     }
                 }
             }
@@ -385,15 +346,18 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match self.mutagen_client.terminate_session(&session.identifier) {
                     Ok(_) => {
-                        self.status_message = Some(StatusMessage::info(format!("Terminated session: {}", session.name)));
+                        self.status_message = Some(StatusMessage::info(format!(
+                            "Terminated session: {}",
+                            session.name
+                        )));
                         self.sessions.remove(idx);
-                        let total_items = self.sessions.len() + self.projects.len();
-                        if self.selected_index >= total_items && total_items > 0 {
-                            self.selected_index = total_items - 1;
-                        }
+                        // Update selection manager with new list sizes (handles clamping)
+                        self.selection
+                            .update_sizes(self.projects.len(), self.sessions.len());
                     }
                     Err(e) => {
-                        self.status_message = Some(StatusMessage::error(format!("Failed to terminate: {}", e)));
+                        self.status_message =
+                            Some(StatusMessage::error(format!("Failed to terminate: {}", e)));
                     }
                 }
             }
@@ -405,10 +369,14 @@ impl App {
             if let Some(session) = self.sessions.get(idx) {
                 match self.mutagen_client.flush_session(&session.identifier) {
                     Ok(_) => {
-                        self.status_message = Some(StatusMessage::info(format!("Flushed session: {}", session.name)));
+                        self.status_message = Some(StatusMessage::info(format!(
+                            "Flushed session: {}",
+                            session.name
+                        )));
                     }
                     Err(e) => {
-                        self.status_message = Some(StatusMessage::error(format!("Failed to flush: {}", e)));
+                        self.status_message =
+                            Some(StatusMessage::error(format!("Failed to flush: {}", e)));
                     }
                 }
             }
@@ -420,11 +388,16 @@ impl App {
             if let Some(project) = self.projects.get(project_idx) {
                 match self.mutagen_client.start_project(&project.file.path) {
                     Ok(_) => {
-                        self.status_message =
-                            Some(StatusMessage::info(format!("Started project: {}", project.file.display_name())));
+                        self.status_message = Some(StatusMessage::info(format!(
+                            "Started project: {}",
+                            project.file.display_name()
+                        )));
                     }
                     Err(e) => {
-                        self.status_message = Some(StatusMessage::error(format!("Failed to start project: {}", e)));
+                        self.status_message = Some(StatusMessage::error(format!(
+                            "Failed to start project: {}",
+                            e
+                        )));
                     }
                 }
             }
@@ -474,7 +447,8 @@ impl App {
                 }
 
                 if project.file.sessions.is_empty() {
-                    self.status_message = Some(StatusMessage::error("No sessions defined in project file"));
+                    self.status_message =
+                        Some(StatusMessage::error("No sessions defined in project file"));
                     return;
                 }
 
@@ -501,12 +475,24 @@ impl App {
                     };
 
                     // Ensure both endpoints' parent directories exist before creating session
-                    if let Err(e) = self.mutagen_client.ensure_endpoint_directory_exists(&session_def.alpha) {
-                        errors.push((session_name.clone(), format!("Failed to create alpha directory: {}", e)));
+                    if let Err(e) = self
+                        .mutagen_client
+                        .ensure_endpoint_directory_exists(&session_def.alpha)
+                    {
+                        errors.push((
+                            session_name.clone(),
+                            format!("Failed to create alpha directory: {}", e),
+                        ));
                         continue;
                     }
-                    if let Err(e) = self.mutagen_client.ensure_endpoint_directory_exists(&session_def.beta) {
-                        errors.push((session_name.clone(), format!("Failed to create beta directory: {}", e)));
+                    if let Err(e) = self
+                        .mutagen_client
+                        .ensure_endpoint_directory_exists(&session_def.beta)
+                    {
+                        errors.push((
+                            session_name.clone(),
+                            format!("Failed to create beta directory: {}", e),
+                        ));
                         continue;
                     }
 
@@ -649,8 +635,9 @@ impl App {
             if let Some(project) = self.projects.get(project_idx) {
                 // Only pause/resume if project has active sessions
                 if project.active_sessions.is_empty() {
-                    self.status_message =
-                        Some(StatusMessage::info("Project has no active sessions. Use 's' to start."));
+                    self.status_message = Some(StatusMessage::info(
+                        "Project has no active sessions. Use 's' to start.",
+                    ));
                     return;
                 }
 
@@ -674,7 +661,8 @@ impl App {
             SessionDisplayMode::ShowPaths => SessionDisplayMode::ShowLastRefresh,
             SessionDisplayMode::ShowLastRefresh => SessionDisplayMode::ShowPaths,
         };
-        self.status_message = Some(StatusMessage::info(format!("Display mode: {}",
+        self.status_message = Some(StatusMessage::info(format!(
+            "Display mode: {}",
             match self.session_display_mode {
                 SessionDisplayMode::ShowPaths => "Paths",
                 SessionDisplayMode::ShowLastRefresh => "Last Sync Time",
@@ -688,13 +676,16 @@ impl App {
                 if session.has_conflicts() {
                     self.viewing_conflicts = !self.viewing_conflicts;
                     if self.viewing_conflicts {
-                        self.status_message =
-                            Some(StatusMessage::info(format!("Viewing conflicts for: {}", session.name)));
+                        self.status_message = Some(StatusMessage::info(format!(
+                            "Viewing conflicts for: {}",
+                            session.name
+                        )));
                     } else {
                         self.status_message = Some(StatusMessage::info("Closed conflict view"));
                     }
                 } else {
-                    self.status_message = Some(StatusMessage::error("No conflicts in selected session"));
+                    self.status_message =
+                        Some(StatusMessage::error("No conflicts in selected session"));
                 }
             }
         } else {
@@ -712,7 +703,10 @@ impl App {
     }
 
     pub fn should_auto_refresh(&self) -> bool {
-        const AUTO_REFRESH_INTERVAL_SECS: i64 = 3;
+        // Check if auto-refresh is enabled in config
+        if !self.config.refresh.enabled {
+            return false;
+        }
 
         // Don't auto-refresh if the last refresh resulted in an error
         // User must manually retry with 'r' to clear the error state
@@ -720,10 +714,12 @@ impl App {
             return false;
         }
 
+        let interval_secs = self.config.refresh.interval_secs as i64;
+
         match self.last_refresh {
             Some(last) => {
                 let elapsed = Local::now().signed_duration_since(last);
-                elapsed.num_seconds() >= AUTO_REFRESH_INTERVAL_SECS
+                elapsed.num_seconds() >= interval_secs
             }
             None => true,
         }

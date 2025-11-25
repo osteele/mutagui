@@ -1,4 +1,5 @@
 use crate::app::{App, SessionDisplayMode};
+use crate::widgets::{HelpBar, StyledText};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -43,7 +44,7 @@ fn calculate_status_height(status_text: &str, available_width: u16) -> u16 {
     let line_count = wrapped_lines.len() as u16;
 
     // Add 2 for borders, clamp between 3 (min) and 7 (max: 5 lines of content + 2 borders)
-    (line_count + 2).max(3).min(7)
+    (line_count + 2).clamp(3, 7)
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -142,23 +143,24 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.color_scheme;
     let message = Paragraph::new(vec![
         Line::from(""),
-        Line::from(Span::styled(
-            "No Mutagen sessions or projects found",
-            Style::default()
-                .fg(app.color_scheme.session_status_fg)
-                .add_modifier(Modifier::BOLD),
-        )),
+        StyledText::new(theme)
+            .styled(
+                "No Mutagen sessions or projects found",
+                Style::default()
+                    .fg(theme.session_status_fg)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .build(),
         Line::from(""),
-        Line::from(Span::styled(
-            "• Start a new session with: mutagen sync create",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        )),
-        Line::from(Span::styled(
-            "• Or create a mutagen.yml file in your project directory",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        )),
+        StyledText::new(theme)
+            .help_text("• Start a new session with: mutagen sync create")
+            .build(),
+        StyledText::new(theme)
+            .help_text("• Or create a mutagen.yml file in your project directory")
+            .build(),
     ])
     .block(Block::default().borders(Borders::ALL).title("Welcome"))
     .style(Style::default());
@@ -167,13 +169,13 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let title = Paragraph::new("Mutagen TUI")
-        .style(
-            Style::default()
-                .fg(app.color_scheme.header_fg)
-                .add_modifier(Modifier::BOLD),
-        )
-        .block(Block::default().borders(Borders::ALL));
+    let title = Paragraph::new(
+        StyledText::new(&app.color_scheme)
+            .header("Mutagen TUI")
+            .build(),
+    )
+    .style(Style::default().add_modifier(Modifier::BOLD))
+    .block(Block::default().borders(Borders::ALL));
     f.render_widget(title, area);
 }
 
@@ -181,7 +183,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 fn get_session_display_name(app: &App, session: &crate::mutagen::SyncSession) -> String {
     // Find which project owns this session
     for project in &app.projects {
-        if project.active_sessions.iter().any(|s| s.name == session.name) {
+        if project
+            .active_sessions
+            .iter()
+            .any(|s| s.name == session.name)
+        {
             // Session belongs to this project - format as "project-name > session-name"
             let project_name = project.file.display_name();
             return format!("{} > {}", project_name, session.name);
@@ -318,7 +324,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
 
             let content = Line::from(spans);
 
-            let is_selected = i + app.projects.len() == app.selected_index;
+            let is_selected = i + app.projects.len() == app.selected_index();
             let style = if is_selected {
                 Style::default()
                     .bg(app.color_scheme.selection_bg)
@@ -342,6 +348,7 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
     let project_index_offset = 0; // Projects are now first
+    let theme = &app.color_scheme;
 
     let items: Vec<ListItem> = app
         .projects
@@ -349,11 +356,7 @@ fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, project)| {
             let status_icon = project.status_icon();
-            let status_color = if project.is_active() {
-                app.color_scheme.status_running_fg
-            } else {
-                app.color_scheme.status_paused_fg
-            };
+            let is_active = project.is_active();
 
             let mut lines = Vec::new();
 
@@ -368,55 +371,36 @@ fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
                 file_path
             };
 
-            let header = Line::from(vec![
-                Span::styled(
-                    format!("{} ", status_icon),
-                    Style::default().fg(status_color),
-                ),
-                Span::styled(
-                    project.file.display_name(),
-                    Style::default()
-                        .fg(app.color_scheme.session_name_fg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    format!("({})", short_path),
-                    Style::default().fg(app.color_scheme.session_status_fg),
-                ),
-            ]);
+            let header = StyledText::new(theme)
+                .status_icon_owned(format!("{} ", status_icon), is_active)
+                .session_name_owned(project.file.display_name())
+                .text(" ")
+                .status_text_owned(format!("({})", short_path))
+                .build();
             lines.push(header);
 
             for session in &project.active_sessions {
-                let session_line = Line::from(vec![
-                    Span::raw("  └─ "),
-                    Span::styled(
-                        &session.name,
-                        Style::default().fg(app.color_scheme.session_alpha_fg),
-                    ),
-                    Span::raw(": "),
-                    Span::styled(
-                        &session.status,
-                        Style::default().fg(app.color_scheme.session_status_fg),
-                    ),
-                ]);
+                let session_line = StyledText::new(theme)
+                    .text("  └─ ")
+                    .endpoint_alpha(&session.name)
+                    .text(": ")
+                    .status_text(&session.status)
+                    .build();
                 lines.push(session_line);
             }
 
             if project.active_sessions.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        "(no running sessions)",
-                        Style::default().fg(app.color_scheme.session_status_fg),
-                    ),
-                ]));
+                let empty_line = StyledText::new(theme)
+                    .text("  ")
+                    .status_text("(no running sessions)")
+                    .build();
+                lines.push(empty_line);
             }
 
-            let is_selected = project_index_offset + i == app.selected_index;
+            let is_selected = project_index_offset + i == app.selected_index();
             let style = if is_selected {
                 Style::default()
-                    .bg(app.color_scheme.selection_bg)
+                    .bg(theme.selection_bg)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -467,90 +451,34 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
-    let is_project_selected = app.selected_index < app.projects.len();
+    let is_project_selected = app.selected_index() < app.projects.len();
 
-    let mut spans = vec![
-        Span::styled("↑/↓", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Nav | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-        Span::styled("Tab", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Switch Area | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-        Span::styled("m", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Mode | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-    ];
+    let mut help_bar = HelpBar::new(&app.color_scheme)
+        .item("↑/↓", "Nav")
+        .item("Tab", "Switch Area")
+        .item("m", "Mode");
 
     if is_project_selected {
         // Project-specific commands
-        spans.extend(vec![
-            Span::styled("↵", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(
-                " Edit | ",
-                Style::default().fg(app.color_scheme.help_text_fg),
-            ),
-            Span::styled("s", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(
-                " Start/Stop | ",
-                Style::default().fg(app.color_scheme.help_text_fg),
-            ),
-            Span::styled("p", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(
-                " Push | ",
-                Style::default().fg(app.color_scheme.help_text_fg),
-            ),
-            Span::styled("Space", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(
-                " Pause/Resume | ",
-                Style::default().fg(app.color_scheme.help_text_fg),
-            ),
-        ]);
+        help_bar = help_bar
+            .item("↵", "Edit")
+            .item("s", "Start/Stop")
+            .item("p", "Push")
+            .item("Space", "Pause/Resume");
     } else {
         // Session-specific commands
-        spans.extend(vec![
-            Span::styled("Space", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(
-                " Pause/Resume | ",
-                Style::default().fg(app.color_scheme.help_text_fg),
-            ),
-            Span::styled("f", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(
-                " Flush | ",
-                Style::default().fg(app.color_scheme.help_text_fg),
-            ),
-            Span::styled("t", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(
-                " Terminate | ",
-                Style::default().fg(app.color_scheme.help_text_fg),
-            ),
-            Span::styled("c", Style::default().fg(app.color_scheme.help_key_fg)),
-            Span::styled(
-                " Conflicts | ",
-                Style::default().fg(app.color_scheme.help_text_fg),
-            ),
-        ]);
+        help_bar = help_bar
+            .item("Space", "Pause/Resume")
+            .item("f", "Flush")
+            .item("t", "Terminate")
+            .item("c", "Conflicts");
     }
 
     // Common commands
-    spans.extend(vec![
-        Span::styled("r", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(
-            " Refresh | ",
-            Style::default().fg(app.color_scheme.help_text_fg),
-        ),
-        Span::styled("q", Style::default().fg(app.color_scheme.help_key_fg)),
-        Span::styled(" Quit", Style::default().fg(app.color_scheme.help_text_fg)),
-    ]);
+    help_bar = help_bar.item("r", "Refresh").item("q", "Quit");
 
-    let help_text = Line::from(spans);
-    let help =
-        Paragraph::new(help_text).block(Block::default().borders(Borders::ALL).title("Help"));
+    let help = Paragraph::new(help_bar.build())
+        .block(Block::default().borders(Borders::ALL).title("Help"));
 
     f.render_widget(help, area);
 }

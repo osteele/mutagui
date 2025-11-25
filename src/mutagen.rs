@@ -1,9 +1,8 @@
-use anyhow::{anyhow, Context, Result};
+use crate::command::{CommandRunner, SystemCommandRunner};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::{Command, Output};
-use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
 pub enum SyncTime {
@@ -154,59 +153,45 @@ impl SyncSession {
     }
 }
 
-fn execute_with_timeout(mut cmd: Command, timeout_secs: u64) -> Result<Output> {
-    // Cross-platform timeout implementation using thread-based approach
-    // This avoids the Unix-only non-blocking pipe implementation that would
-    // hang on Windows where pipes remain blocking.
-    use std::sync::mpsc;
-    use std::thread;
+/// Type alias for the production MutagenClient.
+#[allow(dead_code)] // Available for future use and testing
+pub type ProductionMutagenClient = MutagenClient<SystemCommandRunner>;
 
-    let (tx, rx) = mpsc::channel();
+/// Client for interacting with the Mutagen CLI.
+///
+/// Generic over `CommandRunner` to allow dependency injection of mock
+/// implementations for testing.
+pub struct MutagenClient<R: CommandRunner = SystemCommandRunner> {
+    runner: R,
+}
 
-    // Spawn command execution in a separate thread
-    thread::spawn(move || {
-        let result = cmd
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output();
-        let _ = tx.send(result);
-    });
-
-    // Wait for completion with timeout
-    let timeout_duration = Duration::from_secs(timeout_secs);
-    match rx.recv_timeout(timeout_duration) {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(anyhow!("Failed to execute mutagen command: {}", e)),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            // Note: We can't easily kill the process from here since we don't have
-            // a handle to it. The spawned thread will complete eventually.
-            // In practice, mutagen commands should complete or fail quickly.
-            anyhow::bail!(
-                "Command timed out after {} seconds (may be waiting for input or hanging)",
-                timeout_secs
-            )
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            anyhow::bail!("Command execution thread terminated unexpectedly")
+impl MutagenClient<SystemCommandRunner> {
+    /// Create a new MutagenClient with the default system command runner.
+    pub fn new() -> Self {
+        Self {
+            runner: SystemCommandRunner::new(),
         }
     }
 }
 
-pub struct MutagenClient;
+impl Default for MutagenClient<SystemCommandRunner> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-impl MutagenClient {
-    pub fn new() -> Self {
-        Self
+impl<R: CommandRunner> MutagenClient<R> {
+    /// Create a new MutagenClient with a custom command runner.
+    /// Primarily used for testing with mock runners.
+    #[cfg(test)]
+    pub fn with_runner(runner: R) -> Self {
+        Self { runner }
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SyncSession>> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("sync")
-            .arg("list")
-            .arg("--template")
-            .arg("{{json .}}");
-
-        let output = execute_with_timeout(cmd, 5)?;
+        let output =
+            self.runner
+                .run("mutagen", &["sync", "list", "--template", "{{json .}}"], 5)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -229,10 +214,9 @@ impl MutagenClient {
     }
 
     pub fn pause_session(&self, identifier: &str) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("sync").arg("pause").arg(identifier);
-
-        let output = execute_with_timeout(cmd, 5)?;
+        let output = self
+            .runner
+            .run("mutagen", &["sync", "pause", identifier], 5)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -243,10 +227,9 @@ impl MutagenClient {
     }
 
     pub fn resume_session(&self, identifier: &str) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("sync").arg("resume").arg(identifier);
-
-        let output = execute_with_timeout(cmd, 5)?;
+        let output = self
+            .runner
+            .run("mutagen", &["sync", "resume", identifier], 5)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -257,10 +240,9 @@ impl MutagenClient {
     }
 
     pub fn terminate_session(&self, identifier: &str) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("sync").arg("terminate").arg(identifier);
-
-        let output = execute_with_timeout(cmd, 5)?;
+        let output = self
+            .runner
+            .run("mutagen", &["sync", "terminate", identifier], 5)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -271,10 +253,9 @@ impl MutagenClient {
     }
 
     pub fn flush_session(&self, identifier: &str) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("sync").arg("flush").arg(identifier);
-
-        let output = execute_with_timeout(cmd, 5)?;
+        let output = self
+            .runner
+            .run("mutagen", &["sync", "flush", identifier], 5)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -285,10 +266,10 @@ impl MutagenClient {
     }
 
     pub fn start_project(&self, project_file: &Path) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("project").arg("start").arg("-f").arg(project_file);
-
-        let output = execute_with_timeout(cmd, 10)?; // Project operations might take longer
+        let path_str = project_file.to_string_lossy();
+        let output = self
+            .runner
+            .run("mutagen", &["project", "start", "-f", &path_str], 10)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -299,13 +280,10 @@ impl MutagenClient {
     }
 
     pub fn terminate_project(&self, project_file: &Path) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("project")
-            .arg("terminate")
-            .arg("-f")
-            .arg(project_file);
-
-        let output = execute_with_timeout(cmd, 10)?;
+        let path_str = project_file.to_string_lossy();
+        let output = self
+            .runner
+            .run("mutagen", &["project", "terminate", "-f", &path_str], 10)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -317,10 +295,10 @@ impl MutagenClient {
 
     #[allow(dead_code)] // May be used in future for project-level pause operations
     pub fn pause_project(&self, project_file: &Path) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("project").arg("pause").arg("-f").arg(project_file);
-
-        let output = execute_with_timeout(cmd, 10)?;
+        let path_str = project_file.to_string_lossy();
+        let output = self
+            .runner
+            .run("mutagen", &["project", "pause", "-f", &path_str], 10)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -332,10 +310,10 @@ impl MutagenClient {
 
     #[allow(dead_code)] // May be used in future for project-level resume operations
     pub fn resume_project(&self, project_file: &Path) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("project").arg("resume").arg("-f").arg(project_file);
-
-        let output = execute_with_timeout(cmd, 10)?;
+        let path_str = project_file.to_string_lossy();
+        let output = self
+            .runner
+            .run("mutagen", &["project", "resume", "-f", &path_str], 10)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -351,7 +329,10 @@ impl MutagenClient {
     pub fn ensure_endpoint_directory_exists(&self, endpoint: &str) -> Result<()> {
         // Check if this is a Windows drive letter path (e.g., C:\, D:\)
         let is_windows_drive = endpoint.len() >= 2
-            && endpoint.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && endpoint
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
             && endpoint.chars().nth(1) == Some(':');
 
         // Remote paths (host:path format) - but exclude Windows drive letters
@@ -359,19 +340,14 @@ impl MutagenClient {
             // Parse as remote: host:path
             if let Some((host, path)) = endpoint.split_once(':') {
                 // Use SSH to create directory on remote host
-                let cmd = Command::new("ssh")
-                    .arg(host)
-                    .arg(format!("mkdir -p {}", path))
-                    .output();
+                let mkdir_cmd = format!("mkdir -p {}", path);
+                let output = self.runner.run("ssh", &[host, &mkdir_cmd], 10)?;
 
-                match cmd {
-                    Ok(output) if output.status.success() => Ok(()),
-                    Ok(output) => {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        anyhow::bail!("Failed to create remote directory {}: {}", endpoint, stderr)
-                    }
-                    Err(e) => anyhow::bail!("Failed to run ssh to create directory {}: {}", endpoint, e),
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("Failed to create remote directory {}: {}", endpoint, stderr);
                 }
+                Ok(())
             } else {
                 anyhow::bail!("Invalid remote endpoint format: {}", endpoint)
             }
@@ -385,14 +361,11 @@ impl MutagenClient {
     /// Checks if a project is currently running.
     /// Returns true if the project is running, false otherwise.
     pub fn is_project_running(&self, project_file: &Path) -> bool {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("project")
-            .arg("list")
-            .arg("-f")
-            .arg(project_file);
-
-        // Use a short timeout since this is just a status check
-        match execute_with_timeout(cmd, 3) {
+        let path_str = project_file.to_string_lossy();
+        match self
+            .runner
+            .run("mutagen", &["project", "list", "-f", &path_str], 3)
+        {
             Ok(output) => output.status.success(),
             Err(_) => false, // Timeout or execution error means not running
         }
@@ -405,23 +378,29 @@ impl MutagenClient {
         beta: &str,
         ignore: Option<&[String]>,
     ) -> Result<()> {
-        let mut cmd = Command::new("mutagen");
-        cmd.arg("sync")
-            .arg("create")
-            .arg(alpha)
-            .arg(beta)
-            .arg("-m")
-            .arg("one-way-replica")
-            .arg("-n")
-            .arg(name);
+        let mut args = vec![
+            "sync",
+            "create",
+            alpha,
+            beta,
+            "-m",
+            "one-way-replica",
+            "-n",
+            name,
+        ];
 
-        if let Some(ignore_patterns) = ignore {
-            for pattern in ignore_patterns {
-                cmd.arg("--ignore").arg(pattern);
-            }
-        }
+        // Collect ignore patterns as owned strings to extend lifetime
+        let ignore_args: Vec<String> = ignore
+            .unwrap_or(&[])
+            .iter()
+            .flat_map(|pattern| vec!["--ignore".to_string(), pattern.clone()])
+            .collect();
 
-        let output = execute_with_timeout(cmd, 15)?; // Create might take longer
+        // Convert to &str slice for the runner
+        let ignore_refs: Vec<&str> = ignore_args.iter().map(|s| s.as_str()).collect();
+        args.extend(ignore_refs);
+
+        let output = self.runner.run("mutagen", &args, 15)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -435,6 +414,214 @@ impl MutagenClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::{failure_output, success_output, MockCommandRunner};
+
+    // ============ list_sessions tests ============
+
+    #[test]
+    fn test_list_sessions_empty() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen sync list --template {{json .}}",
+            success_output("[]"),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let sessions = client.list_sessions().unwrap();
+
+        assert_eq!(sessions.len(), 0);
+    }
+
+    #[test]
+    fn test_list_sessions_empty_string() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen sync list --template {{json .}}",
+            success_output(""),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let sessions = client.list_sessions().unwrap();
+
+        assert_eq!(sessions.len(), 0);
+    }
+
+    #[test]
+    fn test_list_sessions_with_sessions() {
+        let runner = MockCommandRunner::new();
+        let json = r#"[{
+            "name": "test-session",
+            "identifier": "session-123",
+            "alpha": {
+                "protocol": "local",
+                "path": "/local/path",
+                "connected": true,
+                "scanned": true
+            },
+            "beta": {
+                "protocol": "ssh",
+                "path": "/remote/path",
+                "host": "server.example.com",
+                "connected": true,
+                "scanned": true
+            },
+            "status": "Watching for changes",
+            "paused": false,
+            "conflicts": []
+        }]"#;
+
+        runner.expect(
+            "mutagen sync list --template {{json .}}",
+            success_output(json),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let sessions = client.list_sessions().unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "test-session");
+        assert_eq!(sessions[0].identifier, "session-123");
+        assert!(!sessions[0].paused);
+        assert_eq!(sessions[0].alpha.path, "/local/path");
+        assert_eq!(
+            sessions[0].beta.host.as_ref().unwrap(),
+            "server.example.com"
+        );
+    }
+
+    #[test]
+    fn test_list_sessions_command_fails() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen sync list --template {{json .}}",
+            failure_output("daemon not running"),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.list_sessions();
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("daemon not running"));
+    }
+
+    #[test]
+    fn test_list_sessions_invalid_json() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen sync list --template {{json .}}",
+            success_output("not valid json"),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.list_sessions();
+
+        assert!(result.is_err());
+    }
+
+    // ============ pause_session tests ============
+
+    #[test]
+    fn test_pause_session_success() {
+        let runner = MockCommandRunner::new();
+        runner.expect("mutagen sync pause session-123", success_output(""));
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.pause_session("session-123");
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_pause_session_failure() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen sync pause session-123",
+            failure_output("session not found"),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.pause_session("session-123");
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("session not found"));
+    }
+
+    // ============ resume_session tests ============
+
+    #[test]
+    fn test_resume_session_success() {
+        let runner = MockCommandRunner::new();
+        runner.expect("mutagen sync resume session-123", success_output(""));
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.resume_session("session-123");
+
+        assert!(result.is_ok());
+    }
+
+    // ============ terminate_session tests ============
+
+    #[test]
+    fn test_terminate_session_success() {
+        let runner = MockCommandRunner::new();
+        runner.expect("mutagen sync terminate session-123", success_output(""));
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.terminate_session("session-123");
+
+        assert!(result.is_ok());
+    }
+
+    // ============ flush_session tests ============
+
+    #[test]
+    fn test_flush_session_success() {
+        let runner = MockCommandRunner::new();
+        runner.expect("mutagen sync flush session-123", success_output(""));
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.flush_session("session-123");
+
+        assert!(result.is_ok());
+    }
+
+    // ============ is_project_running tests ============
+
+    #[test]
+    fn test_is_project_running_true() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen project list -f /path/to/project.yml",
+            success_output("project output"),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.is_project_running(std::path::Path::new("/path/to/project.yml"));
+
+        assert!(result);
+    }
+
+    #[test]
+    fn test_is_project_running_false() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen project list -f /path/to/project.yml",
+            failure_output("no project"),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.is_project_running(std::path::Path::new("/path/to/project.yml"));
+
+        assert!(!result);
+    }
+
+    // ============ Existing tests ============
 
     #[test]
     fn test_parse_conflict_with_digest() {

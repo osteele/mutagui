@@ -1,8 +1,12 @@
 mod app;
+mod command;
+mod config;
 mod mutagen;
 mod project;
+mod selection;
 mod theme;
 mod ui;
+mod widgets;
 
 use anyhow::Result;
 use app::{App, StatusMessage};
@@ -216,27 +220,28 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     // Handle editor result
                                     match status {
                                         Ok(exit_status) if exit_status.success() => {
-                                            app.status_message = Some(StatusMessage::info(format!(
-                                                "Edited: {}",
-                                                project.file.display_name()
-                                            )));
+                                            app.status_message = Some(StatusMessage::info(
+                                                format!("Edited: {}", project.file.display_name()),
+                                            ));
                                             app.refresh_sessions().await?;
                                         }
                                         Ok(exit_status) => {
-                                            app.status_message = Some(StatusMessage::warning(format!(
-                                                "Editor exited with code: {}",
-                                                exit_status.code().unwrap_or(-1)
-                                            )));
+                                            app.status_message =
+                                                Some(StatusMessage::warning(format!(
+                                                    "Editor exited with code: {}",
+                                                    exit_status.code().unwrap_or(-1)
+                                                )));
                                         }
                                         Err(e) => {
-                                            app.status_message =
-                                                Some(StatusMessage::error(format!("Failed to launch editor: {}", e)));
+                                            app.status_message = Some(StatusMessage::error(
+                                                format!("Failed to launch editor: {}", e),
+                                            ));
                                         }
                                     }
                                 }
                             } else {
                                 app.status_message = Some(StatusMessage::info(
-                                    "Select a project to edit its configuration file"
+                                    "Select a project to edit its configuration file",
                                 ));
                             }
                         }
@@ -267,8 +272,13 @@ async fn run_app<B: ratatui::backend::Backend>(
                                 // Project selected: create push session
                                 if !app.selected_project_has_sessions() {
                                     // Count sessions to create for proper plural message
-                                    let session_count = if let Some(project_idx) = app.get_selected_project_index() {
-                                        app.projects.get(project_idx).map(|p| p.file.sessions.len()).unwrap_or(0)
+                                    let session_count = if let Some(project_idx) =
+                                        app.get_selected_project_index()
+                                    {
+                                        app.projects
+                                            .get(project_idx)
+                                            .map(|p| p.file.sessions.len())
+                                            .unwrap_or(0)
                                     } else {
                                         0
                                     };
@@ -279,9 +289,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     };
 
                                     // Show blocking modal before operation
-                                    app.blocking_op = Some(app::BlockingOperation {
-                                        message,
-                                    });
+                                    app.blocking_op = Some(app::BlockingOperation { message });
                                     terminal.draw(|f| ui::draw(f, app))?;
 
                                     app.push_selected_project();
@@ -299,17 +307,20 @@ async fn run_app<B: ratatui::backend::Backend>(
                         }
                         KeyCode::Char(' ') => {
                             // Check if operating on project (multiple sessions) or single session
-                            if app.get_selected_project_index().is_some() && app.get_selected_session_index().is_none() {
+                            if app.get_selected_project_index().is_some()
+                                && app.get_selected_session_index().is_none()
+                            {
                                 // Project selected: show blocking modal for pause/resume all
-                                let has_running = if let Some(project_idx) = app.get_selected_project_index() {
-                                    if let Some(project) = app.projects.get(project_idx) {
-                                        project.active_sessions.iter().any(|s| !s.paused)
+                                let has_running =
+                                    if let Some(project_idx) = app.get_selected_project_index() {
+                                        if let Some(project) = app.projects.get(project_idx) {
+                                            project.active_sessions.iter().any(|s| !s.paused)
+                                        } else {
+                                            false
+                                        }
                                     } else {
                                         false
-                                    }
-                                } else {
-                                    false
-                                };
+                                    };
 
                                 let operation_name = if has_running {
                                     "Pausing all sessions..."
