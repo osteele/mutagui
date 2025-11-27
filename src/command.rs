@@ -5,13 +5,17 @@
 //! `mutagen` binary.
 
 use anyhow::{anyhow, Result};
-use std::process::{Command, Output};
+use async_trait::async_trait;
+use std::process::Output;
 use std::time::Duration;
+use tokio::process::Command as TokioCommand;
+use tokio::time::timeout;
 
 /// Trait for executing external commands.
 ///
 /// This abstraction allows `MutagenClient` to be generic over how commands
 /// are executed, enabling dependency injection of mock implementations for testing.
+#[async_trait]
 pub trait CommandRunner: Send + Sync {
     /// Execute a command with the given program and arguments.
     ///
@@ -22,7 +26,7 @@ pub trait CommandRunner: Send + Sync {
     ///
     /// # Returns
     /// The command's output including stdout, stderr, and exit status.
-    fn run(&self, program: &str, args: &[&str], timeout_secs: u64) -> Result<Output>;
+    async fn run(&self, program: &str, args: &[&str], timeout_secs: u64) -> Result<Output>;
 }
 
 /// Production implementation that executes real system commands.
@@ -35,43 +39,31 @@ impl SystemCommandRunner {
     }
 }
 
+#[async_trait]
 impl CommandRunner for SystemCommandRunner {
-    fn run(&self, program: &str, args: &[&str], timeout_secs: u64) -> Result<Output> {
-        let mut cmd = Command::new(program);
-        cmd.args(args);
-        execute_with_timeout(cmd, timeout_secs)
-    }
-}
-
-/// Cross-platform timeout implementation using thread-based approach.
-fn execute_with_timeout(mut cmd: Command, timeout_secs: u64) -> Result<Output> {
-    use std::sync::mpsc;
-    use std::thread;
-
-    let (tx, rx) = mpsc::channel();
-
-    // Spawn command execution in a separate thread
-    thread::spawn(move || {
-        let result = cmd
+    async fn run(&self, program: &str, args: &[&str], timeout_secs: u64) -> Result<Output> {
+        let child = TokioCommand::new(program)
+            .args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output();
-        let _ = tx.send(result);
-    });
+            .spawn()
+            .map_err(|e| anyhow!("Failed to spawn command '{}': {}", program, e))?;
 
-    // Wait for completion with timeout
-    let timeout_duration = Duration::from_secs(timeout_secs);
-    match rx.recv_timeout(timeout_duration) {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(anyhow!("Failed to execute command: {}", e)),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            anyhow::bail!(
-                "Command timed out after {} seconds (may be waiting for input or hanging)",
-                timeout_secs
-            )
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            anyhow::bail!("Command execution thread terminated unexpectedly")
+        let timeout_duration = Duration::from_secs(timeout_secs);
+
+        match timeout(timeout_duration, child.wait_with_output()).await {
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(e)) => Err(anyhow!("Command '{}' failed: {}", program, e)),
+            Err(_) => {
+                // Timeout occurred - kill the child process
+                // Note: child.kill() requires &mut self, but we've moved child into wait_with_output
+                // The timeout cancellation will drop the future which should clean up the child
+                anyhow::bail!(
+                    "Command '{}' timed out after {} seconds",
+                    program,
+                    timeout_secs
+                )
+            }
         }
     }
 }
@@ -122,14 +114,16 @@ impl MockCommandRunner {
     }
 
     /// Check if a specific command was executed.
+    #[allow(dead_code)]
     pub fn was_executed(&self, command: &str) -> bool {
         self.executed.lock().unwrap().iter().any(|c| c == command)
     }
 }
 
 #[cfg(test)]
+#[async_trait]
 impl CommandRunner for MockCommandRunner {
-    fn run(&self, program: &str, args: &[&str], _timeout_secs: u64) -> Result<Output> {
+    async fn run(&self, program: &str, args: &[&str], _timeout_secs: u64) -> Result<Output> {
         let command = format!("{} {}", program, args.join(" "));
 
         // Record the execution
@@ -178,33 +172,33 @@ pub fn failure_output(stderr: &str) -> Output {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_mock_runner_returns_configured_output() {
+    #[tokio::test]
+    async fn test_mock_runner_returns_configured_output() {
         let mock = MockCommandRunner::new();
         mock.expect("echo hello world", success_output("hello world\n"));
 
-        let result = mock.run("echo", &["hello", "world"], 5).unwrap();
+        let result = mock.run("echo", &["hello", "world"], 5).await.unwrap();
 
         assert!(result.status.success());
         assert_eq!(String::from_utf8_lossy(&result.stdout), "hello world\n");
     }
 
-    #[test]
-    fn test_mock_runner_records_executed_commands() {
+    #[tokio::test]
+    async fn test_mock_runner_records_executed_commands() {
         let mock = MockCommandRunner::new();
         mock.expect("test cmd", success_output(""));
 
-        let _ = mock.run("test", &["cmd"], 5);
+        let _ = mock.run("test", &["cmd"], 5).await;
 
         assert!(mock.was_executed("test cmd"));
         assert_eq!(mock.executed_commands(), vec!["test cmd"]);
     }
 
-    #[test]
-    fn test_mock_runner_returns_error_for_unconfigured_command() {
+    #[tokio::test]
+    async fn test_mock_runner_returns_error_for_unconfigured_command() {
         let mock = MockCommandRunner::new();
 
-        let result = mock.run("unknown", &["cmd"], 5);
+        let result = mock.run("unknown", &["cmd"], 5).await;
 
         assert!(result.is_err());
         assert!(result
@@ -213,12 +207,12 @@ mod tests {
             .contains("No response configured"));
     }
 
-    #[test]
-    fn test_mock_runner_returns_configured_error() {
+    #[tokio::test]
+    async fn test_mock_runner_returns_configured_error() {
         let mock = MockCommandRunner::new();
         mock.expect_error("fail cmd", "Command failed");
 
-        let result = mock.run("fail", &["cmd"], 5);
+        let result = mock.run("fail", &["cmd"], 5).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Command failed"));
@@ -230,5 +224,31 @@ mod tests {
 
         assert!(!output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stderr), "error message");
+    }
+
+    #[tokio::test]
+    async fn test_system_runner_executes_command() {
+        let runner = SystemCommandRunner::new();
+
+        let result = runner.run("echo", &["hello"], 5).await.unwrap();
+
+        assert!(result.status.success());
+        assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "hello");
+    }
+
+    #[tokio::test]
+    async fn test_system_runner_timeout() {
+        let runner = SystemCommandRunner::new();
+
+        // Use sleep command with 10 second sleep, but only 1 second timeout
+        let result = runner.run("sleep", &["10"], 1).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("timed out"),
+            "Expected timeout error, got: {}",
+            err
+        );
     }
 }

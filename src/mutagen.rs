@@ -2,6 +2,8 @@ use crate::command::{CommandRunner, SystemCommandRunner};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use shell_escape::escape;
+use std::borrow::Cow;
 use std::path::Path;
 
 #[derive(Debug, Clone, Default)]
@@ -188,10 +190,11 @@ impl<R: CommandRunner> MutagenClient<R> {
         Self { runner }
     }
 
-    pub fn list_sessions(&self) -> Result<Vec<SyncSession>> {
-        let output =
-            self.runner
-                .run("mutagen", &["sync", "list", "--template", "{{json .}}"], 5)?;
+    pub async fn list_sessions(&self) -> Result<Vec<SyncSession>> {
+        let output = self
+            .runner
+            .run("mutagen", &["sync", "list", "--template", "{{json .}}"], 5)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -213,10 +216,11 @@ impl<R: CommandRunner> MutagenClient<R> {
         Ok(sessions)
     }
 
-    pub fn pause_session(&self, identifier: &str) -> Result<()> {
+    pub async fn pause_session(&self, identifier: &str) -> Result<()> {
         let output = self
             .runner
-            .run("mutagen", &["sync", "pause", identifier], 5)?;
+            .run("mutagen", &["sync", "pause", identifier], 5)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -226,10 +230,11 @@ impl<R: CommandRunner> MutagenClient<R> {
         Ok(())
     }
 
-    pub fn resume_session(&self, identifier: &str) -> Result<()> {
+    pub async fn resume_session(&self, identifier: &str) -> Result<()> {
         let output = self
             .runner
-            .run("mutagen", &["sync", "resume", identifier], 5)?;
+            .run("mutagen", &["sync", "resume", identifier], 5)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -239,10 +244,11 @@ impl<R: CommandRunner> MutagenClient<R> {
         Ok(())
     }
 
-    pub fn terminate_session(&self, identifier: &str) -> Result<()> {
+    pub async fn terminate_session(&self, identifier: &str) -> Result<()> {
         let output = self
             .runner
-            .run("mutagen", &["sync", "terminate", identifier], 5)?;
+            .run("mutagen", &["sync", "terminate", identifier], 5)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -252,10 +258,11 @@ impl<R: CommandRunner> MutagenClient<R> {
         Ok(())
     }
 
-    pub fn flush_session(&self, identifier: &str) -> Result<()> {
+    pub async fn flush_session(&self, identifier: &str) -> Result<()> {
         let output = self
             .runner
-            .run("mutagen", &["sync", "flush", identifier], 5)?;
+            .run("mutagen", &["sync", "flush", identifier], 5)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -265,11 +272,12 @@ impl<R: CommandRunner> MutagenClient<R> {
         Ok(())
     }
 
-    pub fn start_project(&self, project_file: &Path) -> Result<()> {
+    pub async fn start_project(&self, project_file: &Path) -> Result<()> {
         let path_str = project_file.to_string_lossy();
         let output = self
             .runner
-            .run("mutagen", &["project", "start", "-f", &path_str], 10)?;
+            .run("mutagen", &["project", "start", "-f", &path_str], 10)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -279,11 +287,12 @@ impl<R: CommandRunner> MutagenClient<R> {
         Ok(())
     }
 
-    pub fn terminate_project(&self, project_file: &Path) -> Result<()> {
+    pub async fn terminate_project(&self, project_file: &Path) -> Result<()> {
         let path_str = project_file.to_string_lossy();
         let output = self
             .runner
-            .run("mutagen", &["project", "terminate", "-f", &path_str], 10)?;
+            .run("mutagen", &["project", "terminate", "-f", &path_str], 10)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -294,11 +303,12 @@ impl<R: CommandRunner> MutagenClient<R> {
     }
 
     #[allow(dead_code)] // May be used in future for project-level pause operations
-    pub fn pause_project(&self, project_file: &Path) -> Result<()> {
+    pub async fn pause_project(&self, project_file: &Path) -> Result<()> {
         let path_str = project_file.to_string_lossy();
         let output = self
             .runner
-            .run("mutagen", &["project", "pause", "-f", &path_str], 10)?;
+            .run("mutagen", &["project", "pause", "-f", &path_str], 10)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -309,11 +319,12 @@ impl<R: CommandRunner> MutagenClient<R> {
     }
 
     #[allow(dead_code)] // May be used in future for project-level resume operations
-    pub fn resume_project(&self, project_file: &Path) -> Result<()> {
+    pub async fn resume_project(&self, project_file: &Path) -> Result<()> {
         let path_str = project_file.to_string_lossy();
         let output = self
             .runner
-            .run("mutagen", &["project", "resume", "-f", &path_str], 10)?;
+            .run("mutagen", &["project", "resume", "-f", &path_str], 10)
+            .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -324,54 +335,67 @@ impl<R: CommandRunner> MutagenClient<R> {
     }
 
     /// Ensures a directory exists on an endpoint (local or remote).
-    /// For remote endpoints (format: `host:path`), uses SSH to create the directory.
-    /// For local paths, uses std::fs::create_dir_all.
-    pub fn ensure_endpoint_directory_exists(&self, endpoint: &str) -> Result<()> {
-        // Check if this is a Windows drive letter path (e.g., C:\, D:\)
-        let is_windows_drive = endpoint.len() >= 2
-            && endpoint
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic())
-            && endpoint.chars().nth(1) == Some(':');
+    /// For remote endpoints (SSH, Docker), uses SSH to create the directory.
+    /// For local paths, uses std::fs::create_dir_all with tilde expansion.
+    pub async fn ensure_endpoint_directory_exists(&self, endpoint: &str) -> Result<()> {
+        use crate::endpoint::EndpointAddress;
 
-        // Remote paths (host:path format) - but exclude Windows drive letters
-        if endpoint.contains(':') && !is_windows_drive {
-            // Parse as remote: host:path
-            if let Some((host, path)) = endpoint.split_once(':') {
-                // Use SSH to create directory on remote host
-                let mkdir_cmd = format!("mkdir -p {}", path);
-                let output = self.runner.run("ssh", &[host, &mkdir_cmd], 10)?;
+        let parsed = EndpointAddress::parse(endpoint);
+
+        match parsed {
+            EndpointAddress::Local(path) => {
+                // Expand tilde for local paths
+                let expanded = EndpointAddress::Local(path).expand_tilde();
+                let final_path = expanded.path();
+
+                std::fs::create_dir_all(final_path)
+                    .with_context(|| format!("Failed to create local directory {:?}", final_path))
+            }
+            EndpointAddress::Ssh {
+                user, host, path, ..
+            } => {
+                // Build the SSH host string (user@host or just host)
+                let ssh_host = match user {
+                    Some(u) => format!("{}@{}", u, host),
+                    None => host,
+                };
+
+                // Remote tilde is handled by the remote shell, don't expand it
+                let path_str = path.to_string_lossy();
+                let escaped_path = escape(Cow::Borrowed(&*path_str));
+                let mkdir_cmd = format!("mkdir -p {}", escaped_path);
+                let output = self.runner.run("ssh", &[&ssh_host, &mkdir_cmd], 10).await?;
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     anyhow::bail!("Failed to create remote directory {}: {}", endpoint, stderr);
                 }
                 Ok(())
-            } else {
-                anyhow::bail!("Invalid remote endpoint format: {}", endpoint)
             }
-        } else {
-            // Local path - use std::fs
-            std::fs::create_dir_all(endpoint)
-                .with_context(|| format!("Failed to create local directory {}", endpoint))
+            EndpointAddress::Docker { container, path } => {
+                // Use docker exec to create directory in container
+                let path_str = path.to_string_lossy();
+                let escaped_path = escape(Cow::Borrowed(&*path_str));
+                let mkdir_cmd = format!("mkdir -p {}", escaped_path);
+                let output = self
+                    .runner
+                    .run("docker", &["exec", &container, "sh", "-c", &mkdir_cmd], 10)
+                    .await?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!(
+                        "Failed to create directory in container {}: {}",
+                        container,
+                        stderr
+                    );
+                }
+                Ok(())
+            }
         }
     }
 
-    /// Checks if a project is currently running.
-    /// Returns true if the project is running, false otherwise.
-    pub fn is_project_running(&self, project_file: &Path) -> bool {
-        let path_str = project_file.to_string_lossy();
-        match self
-            .runner
-            .run("mutagen", &["project", "list", "-f", &path_str], 3)
-        {
-            Ok(output) => output.status.success(),
-            Err(_) => false, // Timeout or execution error means not running
-        }
-    }
-
-    pub fn create_push_session(
+    pub async fn create_push_session(
         &self,
         name: &str,
         alpha: &str,
@@ -400,7 +424,7 @@ impl<R: CommandRunner> MutagenClient<R> {
         let ignore_refs: Vec<&str> = ignore_args.iter().map(|s| s.as_str()).collect();
         args.extend(ignore_refs);
 
-        let output = self.runner.run("mutagen", &args, 15)?;
+        let output = self.runner.run("mutagen", &args, 15).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -418,8 +442,8 @@ mod tests {
 
     // ============ list_sessions tests ============
 
-    #[test]
-    fn test_list_sessions_empty() {
+    #[tokio::test]
+    async fn test_list_sessions_empty() {
         let runner = MockCommandRunner::new();
         runner.expect(
             "mutagen sync list --template {{json .}}",
@@ -427,13 +451,13 @@ mod tests {
         );
 
         let client = MutagenClient::with_runner(runner);
-        let sessions = client.list_sessions().unwrap();
+        let sessions = client.list_sessions().await.unwrap();
 
         assert_eq!(sessions.len(), 0);
     }
 
-    #[test]
-    fn test_list_sessions_empty_string() {
+    #[tokio::test]
+    async fn test_list_sessions_empty_string() {
         let runner = MockCommandRunner::new();
         runner.expect(
             "mutagen sync list --template {{json .}}",
@@ -441,13 +465,13 @@ mod tests {
         );
 
         let client = MutagenClient::with_runner(runner);
-        let sessions = client.list_sessions().unwrap();
+        let sessions = client.list_sessions().await.unwrap();
 
         assert_eq!(sessions.len(), 0);
     }
 
-    #[test]
-    fn test_list_sessions_with_sessions() {
+    #[tokio::test]
+    async fn test_list_sessions_with_sessions() {
         let runner = MockCommandRunner::new();
         let json = r#"[{
             "name": "test-session",
@@ -476,7 +500,7 @@ mod tests {
         );
 
         let client = MutagenClient::with_runner(runner);
-        let sessions = client.list_sessions().unwrap();
+        let sessions = client.list_sessions().await.unwrap();
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "test-session");
@@ -489,8 +513,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_list_sessions_command_fails() {
+    #[tokio::test]
+    async fn test_list_sessions_command_fails() {
         let runner = MockCommandRunner::new();
         runner.expect(
             "mutagen sync list --template {{json .}}",
@@ -498,7 +522,7 @@ mod tests {
         );
 
         let client = MutagenClient::with_runner(runner);
-        let result = client.list_sessions();
+        let result = client.list_sessions().await;
 
         assert!(result.is_err());
         assert!(result
@@ -507,8 +531,8 @@ mod tests {
             .contains("daemon not running"));
     }
 
-    #[test]
-    fn test_list_sessions_invalid_json() {
+    #[tokio::test]
+    async fn test_list_sessions_invalid_json() {
         let runner = MockCommandRunner::new();
         runner.expect(
             "mutagen sync list --template {{json .}}",
@@ -516,26 +540,26 @@ mod tests {
         );
 
         let client = MutagenClient::with_runner(runner);
-        let result = client.list_sessions();
+        let result = client.list_sessions().await;
 
         assert!(result.is_err());
     }
 
     // ============ pause_session tests ============
 
-    #[test]
-    fn test_pause_session_success() {
+    #[tokio::test]
+    async fn test_pause_session_success() {
         let runner = MockCommandRunner::new();
         runner.expect("mutagen sync pause session-123", success_output(""));
 
         let client = MutagenClient::with_runner(runner);
-        let result = client.pause_session("session-123");
+        let result = client.pause_session("session-123").await;
 
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_pause_session_failure() {
+    #[tokio::test]
+    async fn test_pause_session_failure() {
         let runner = MockCommandRunner::new();
         runner.expect(
             "mutagen sync pause session-123",
@@ -543,7 +567,7 @@ mod tests {
         );
 
         let client = MutagenClient::with_runner(runner);
-        let result = client.pause_session("session-123");
+        let result = client.pause_session("session-123").await;
 
         assert!(result.is_err());
         assert!(result
@@ -554,71 +578,41 @@ mod tests {
 
     // ============ resume_session tests ============
 
-    #[test]
-    fn test_resume_session_success() {
+    #[tokio::test]
+    async fn test_resume_session_success() {
         let runner = MockCommandRunner::new();
         runner.expect("mutagen sync resume session-123", success_output(""));
 
         let client = MutagenClient::with_runner(runner);
-        let result = client.resume_session("session-123");
+        let result = client.resume_session("session-123").await;
 
         assert!(result.is_ok());
     }
 
     // ============ terminate_session tests ============
 
-    #[test]
-    fn test_terminate_session_success() {
+    #[tokio::test]
+    async fn test_terminate_session_success() {
         let runner = MockCommandRunner::new();
         runner.expect("mutagen sync terminate session-123", success_output(""));
 
         let client = MutagenClient::with_runner(runner);
-        let result = client.terminate_session("session-123");
+        let result = client.terminate_session("session-123").await;
 
         assert!(result.is_ok());
     }
 
     // ============ flush_session tests ============
 
-    #[test]
-    fn test_flush_session_success() {
+    #[tokio::test]
+    async fn test_flush_session_success() {
         let runner = MockCommandRunner::new();
         runner.expect("mutagen sync flush session-123", success_output(""));
 
         let client = MutagenClient::with_runner(runner);
-        let result = client.flush_session("session-123");
+        let result = client.flush_session("session-123").await;
 
         assert!(result.is_ok());
-    }
-
-    // ============ is_project_running tests ============
-
-    #[test]
-    fn test_is_project_running_true() {
-        let runner = MockCommandRunner::new();
-        runner.expect(
-            "mutagen project list -f /path/to/project.yml",
-            success_output("project output"),
-        );
-
-        let client = MutagenClient::with_runner(runner);
-        let result = client.is_project_running(std::path::Path::new("/path/to/project.yml"));
-
-        assert!(result);
-    }
-
-    #[test]
-    fn test_is_project_running_false() {
-        let runner = MockCommandRunner::new();
-        runner.expect(
-            "mutagen project list -f /path/to/project.yml",
-            failure_output("no project"),
-        );
-
-        let client = MutagenClient::with_runner(runner);
-        let result = client.is_project_running(std::path::Path::new("/path/to/project.yml"));
-
-        assert!(!result);
     }
 
     // ============ Existing tests ============
@@ -698,5 +692,109 @@ mod tests {
         let beta_new = beta_change.new.as_ref().unwrap();
         assert_eq!(beta_new.kind, "untracked");
         assert!(beta_new.digest.is_none()); // No digest for untracked files
+    }
+
+    // ============ ensure_endpoint_directory_exists tests ============
+
+    #[tokio::test]
+    async fn test_ensure_endpoint_directory_exists_remote_simple_path() {
+        let runner = MockCommandRunner::new();
+        runner.expect("ssh server mkdir -p /remote/path", success_output(""));
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client
+            .ensure_endpoint_directory_exists("server:/remote/path")
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ensure_endpoint_directory_exists_remote_path_with_spaces() {
+        let runner = MockCommandRunner::new();
+        // shell-escape wraps paths with spaces in single quotes
+        runner.expect(
+            "ssh server mkdir -p '/remote/path with spaces'",
+            success_output(""),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client
+            .ensure_endpoint_directory_exists("server:/remote/path with spaces")
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ensure_endpoint_directory_exists_remote_path_with_special_chars() {
+        let runner = MockCommandRunner::new();
+        // shell-escape wraps paths with special characters in single quotes
+        runner.expect(
+            "ssh server mkdir -p '/remote/path$with\"special'",
+            success_output(""),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client
+            .ensure_endpoint_directory_exists("server:/remote/path$with\"special")
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ensure_endpoint_directory_exists_windows_drive_letter() {
+        // Windows paths like C:\path should be treated as local, not remote
+        // This test verifies the Windows drive letter detection works
+        let runner = MockCommandRunner::new();
+        // No SSH command configured - if it tries to SSH to "C" as a hostname,
+        // the test will fail with "No response configured for command: ssh C ..."
+
+        let client = MutagenClient::with_runner(runner);
+
+        // On non-Windows, this will try to create "C:\Users\test" as a local path
+        // This may succeed (creating a directory literally named "C:\Users\test")
+        // or fail depending on permissions. The key point is it should NOT try SSH.
+        let result = client
+            .ensure_endpoint_directory_exists("C:\\Users\\test")
+            .await;
+
+        // If it's an error, verify it's not an SSH-related error
+        if let Err(e) = result {
+            let err_msg = e.to_string();
+            // Should NOT contain "No response configured" which would indicate SSH was attempted
+            assert!(
+                !err_msg.contains("No response configured"),
+                "Should not attempt SSH for Windows paths, got error: {}",
+                err_msg
+            );
+        }
+        // If it succeeded, that's also fine - it created a local directory
+
+        // Clean up if we created the directory
+        let _ = std::fs::remove_dir_all("C:\\Users\\test");
+        let _ = std::fs::remove_dir("C:\\Users");
+        let _ = std::fs::remove_dir("C:");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_endpoint_directory_exists_ssh_failure() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "ssh server mkdir -p /remote/path",
+            failure_output("Permission denied"),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client
+            .ensure_endpoint_directory_exists("server:/remote/path")
+            .await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Permission denied"));
     }
 }

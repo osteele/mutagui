@@ -131,7 +131,7 @@ impl App {
     }
 
     pub async fn refresh_sessions(&mut self) -> Result<()> {
-        match self.mutagen_client.list_sessions() {
+        match self.mutagen_client.list_sessions().await {
             Ok(sessions) => {
                 let now = Local::now();
 
@@ -180,7 +180,10 @@ impl App {
 
                 self.sessions = sorted_sessions;
 
-                match discover_project_files(self.project_dir.as_deref()) {
+                match discover_project_files(
+                    self.project_dir.as_deref(),
+                    Some(&self.config.projects),
+                ) {
                     Ok(project_files) => {
                         self.projects =
                             correlate_projects_with_sessions(project_files, &self.sessions);
@@ -303,10 +306,10 @@ impl App {
         false
     }
 
-    pub fn pause_selected(&mut self) {
+    pub async fn pause_selected(&mut self) {
         if let Some(idx) = self.get_selected_session_index() {
             if let Some(session) = self.sessions.get(idx) {
-                match self.mutagen_client.pause_session(&session.identifier) {
+                match self.mutagen_client.pause_session(&session.identifier).await {
                     Ok(_) => {
                         self.status_message = Some(StatusMessage::info(format!(
                             "Paused session: {}",
@@ -322,10 +325,14 @@ impl App {
         }
     }
 
-    pub fn resume_selected(&mut self) {
+    pub async fn resume_selected(&mut self) {
         if let Some(idx) = self.get_selected_session_index() {
             if let Some(session) = self.sessions.get(idx) {
-                match self.mutagen_client.resume_session(&session.identifier) {
+                match self
+                    .mutagen_client
+                    .resume_session(&session.identifier)
+                    .await
+                {
                     Ok(_) => {
                         self.status_message = Some(StatusMessage::info(format!(
                             "Resumed session: {}",
@@ -341,10 +348,14 @@ impl App {
         }
     }
 
-    pub fn terminate_selected(&mut self) {
+    pub async fn terminate_selected(&mut self) {
         if let Some(idx) = self.get_selected_session_index() {
             if let Some(session) = self.sessions.get(idx) {
-                match self.mutagen_client.terminate_session(&session.identifier) {
+                match self
+                    .mutagen_client
+                    .terminate_session(&session.identifier)
+                    .await
+                {
                     Ok(_) => {
                         self.status_message = Some(StatusMessage::info(format!(
                             "Terminated session: {}",
@@ -364,10 +375,10 @@ impl App {
         }
     }
 
-    pub fn flush_selected(&mut self) {
+    pub async fn flush_selected(&mut self) {
         if let Some(idx) = self.get_selected_session_index() {
             if let Some(session) = self.sessions.get(idx) {
-                match self.mutagen_client.flush_session(&session.identifier) {
+                match self.mutagen_client.flush_session(&session.identifier).await {
                     Ok(_) => {
                         self.status_message = Some(StatusMessage::info(format!(
                             "Flushed session: {}",
@@ -383,10 +394,10 @@ impl App {
         }
     }
 
-    pub fn start_selected_project(&mut self) {
+    pub async fn start_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                match self.mutagen_client.start_project(&project.file.path) {
+                match self.mutagen_client.start_project(&project.file.path).await {
                     Ok(_) => {
                         self.status_message = Some(StatusMessage::info(format!(
                             "Started project: {}",
@@ -404,15 +415,19 @@ impl App {
         }
     }
 
-    pub fn toggle_selected_project(&mut self) {
+    pub async fn toggle_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                // Check actual project state, not just session existence
-                let is_running = self.mutagen_client.is_project_running(&project.file.path);
+                // Use project.is_active() which checks if there are active sessions
+                let is_running = project.is_active();
 
                 if is_running {
                     // Project is running → terminate it
-                    match self.mutagen_client.terminate_project(&project.file.path) {
+                    match self
+                        .mutagen_client
+                        .terminate_project(&project.file.path)
+                        .await
+                    {
                         Ok(_) => {
                             self.status_message = Some(StatusMessage::info(format!(
                                 "Terminated project: {}",
@@ -430,20 +445,26 @@ impl App {
                     // Project not running → start it
                     // First terminate any lingering sessions that might interfere
                     for session in &project.active_sessions {
-                        let _ = self.mutagen_client.terminate_session(&session.identifier);
+                        let _ = self
+                            .mutagen_client
+                            .terminate_session(&session.identifier)
+                            .await;
                     }
-                    self.start_selected_project();
+                    self.start_selected_project().await;
                 }
             }
         }
     }
 
-    pub fn push_selected_project(&mut self) {
+    pub async fn push_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 // Terminate all active sessions for this project before creating push sessions
                 for session in &project.active_sessions {
-                    let _ = self.mutagen_client.terminate_session(&session.identifier);
+                    let _ = self
+                        .mutagen_client
+                        .terminate_session(&session.identifier)
+                        .await;
                 }
 
                 if project.file.sessions.is_empty() {
@@ -478,6 +499,7 @@ impl App {
                     if let Err(e) = self
                         .mutagen_client
                         .ensure_endpoint_directory_exists(&session_def.alpha)
+                        .await
                     {
                         errors.push((
                             session_name.clone(),
@@ -488,6 +510,7 @@ impl App {
                     if let Err(e) = self
                         .mutagen_client
                         .ensure_endpoint_directory_exists(&session_def.beta)
+                        .await
                     {
                         errors.push((
                             session_name.clone(),
@@ -496,12 +519,16 @@ impl App {
                         continue;
                     }
 
-                    match self.mutagen_client.create_push_session(
-                        &push_name,
-                        &session_def.alpha,
-                        &session_def.beta,
-                        ignore.as_deref(),
-                    ) {
+                    match self
+                        .mutagen_client
+                        .create_push_session(
+                            &push_name,
+                            &session_def.alpha,
+                            &session_def.beta,
+                            ignore.as_deref(),
+                        )
+                        .await
+                    {
                         Ok(_) => {
                             created_count += 1;
                         }
@@ -540,7 +567,7 @@ impl App {
         }
     }
 
-    pub fn pause_selected_project(&mut self) {
+    pub async fn pause_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 if project.active_sessions.is_empty() {
@@ -553,7 +580,7 @@ impl App {
                 let mut errors: Vec<String> = Vec::new();
 
                 for session in &project.active_sessions {
-                    match self.mutagen_client.pause_session(&session.identifier) {
+                    match self.mutagen_client.pause_session(&session.identifier).await {
                         Ok(_) => paused_count += 1,
                         Err(e) => errors.push(format!("{}: {}", session.name, e)),
                     }
@@ -581,7 +608,7 @@ impl App {
         }
     }
 
-    pub fn resume_selected_project(&mut self) {
+    pub async fn resume_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 if project.active_sessions.is_empty() {
@@ -594,7 +621,11 @@ impl App {
                 let mut errors: Vec<String> = Vec::new();
 
                 for session in &project.active_sessions {
-                    match self.mutagen_client.resume_session(&session.identifier) {
+                    match self
+                        .mutagen_client
+                        .resume_session(&session.identifier)
+                        .await
+                    {
                         Ok(_) => resumed_count += 1,
                         Err(e) => errors.push(format!("{}: {}", session.name, e)),
                     }
@@ -622,13 +653,13 @@ impl App {
         }
     }
 
-    pub fn toggle_pause_selected(&mut self) {
+    pub async fn toggle_pause_selected(&mut self) {
         if let Some(idx) = self.get_selected_session_index() {
             if let Some(session) = self.sessions.get(idx) {
                 if session.paused {
-                    self.resume_selected();
+                    self.resume_selected().await;
                 } else {
-                    self.pause_selected();
+                    self.pause_selected().await;
                 }
             }
         } else if let Some(project_idx) = self.get_selected_project_index() {
@@ -644,9 +675,9 @@ impl App {
                 // Check if any session is running (not paused)
                 let has_running = project.active_sessions.iter().any(|s| !s.paused);
                 if has_running {
-                    self.pause_selected_project();
+                    self.pause_selected_project().await;
                 } else {
-                    self.resume_selected_project();
+                    self.resume_selected_project().await;
                 }
             }
         }

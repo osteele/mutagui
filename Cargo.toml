@@ -14,7 +14,9 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 ratatui = "0.29"
 crossterm = "0.28"
-tokio = { version = "1.42", features = ["full"] }
+tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "process", "time"] }
+async-trait = "0.1"
+shell-escape = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
@@ -27,3 +29,6 @@ libc = "0.2.177"
 textwrap = "0.16"
 toml = "0.9.8"
 dirs = "6.0.0"
+
+[dev-dependencies]
+tempfile = "3"
