@@ -4,7 +4,16 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use shell_escape::escape;
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Get the lock file path for a Mutagen project file.
+/// Mutagen creates a `.lock` file with the same name as the project file
+/// (e.g., `project.yml.lock` for `project.yml`).
+fn get_project_lock_path(project_file: &Path) -> PathBuf {
+    let mut lock_path = project_file.as_os_str().to_owned();
+    lock_path.push(".lock");
+    PathBuf::from(lock_path)
+}
 
 #[derive(Debug, Clone, Default)]
 pub enum SyncTime {
@@ -281,6 +290,36 @@ impl<R: CommandRunner> MutagenClient<R> {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Check if failure is due to "project already running"
+            if stderr.contains("project already running") {
+                // Check if there are actually any running sessions
+                let sessions = self.list_sessions().await.unwrap_or_default();
+                if sessions.is_empty() {
+                    // No sessions running - this is a stale lock file
+                    // Remove it and retry
+                    let lock_file = get_project_lock_path(project_file);
+                    if lock_file.exists() {
+                        std::fs::remove_file(&lock_file).with_context(|| {
+                            format!("Failed to remove stale lock file: {}", lock_file.display())
+                        })?;
+
+                        // Retry the start
+                        let retry_output = self
+                            .runner
+                            .run("mutagen", &["project", "start", "-f", &path_str], 10)
+                            .await?;
+
+                        if !retry_output.status.success() {
+                            let retry_stderr = String::from_utf8_lossy(&retry_output.stderr);
+                            anyhow::bail!("mutagen project start failed: {}", retry_stderr);
+                        }
+
+                        return Ok(());
+                    }
+                }
+            }
+
             anyhow::bail!("mutagen project start failed: {}", stderr);
         }
 
@@ -796,5 +835,160 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Permission denied"));
+    }
+
+    // ============ get_project_lock_path tests ============
+
+    #[test]
+    fn test_get_project_lock_path() {
+        let project_path = Path::new("/path/to/mutagen.yml");
+        let lock_path = get_project_lock_path(project_path);
+        assert_eq!(lock_path, PathBuf::from("/path/to/mutagen.yml.lock"));
+    }
+
+    #[test]
+    fn test_get_project_lock_path_with_target() {
+        let project_path = Path::new("/path/to/mutagen-server.yml");
+        let lock_path = get_project_lock_path(project_path);
+        assert_eq!(lock_path, PathBuf::from("/path/to/mutagen-server.yml.lock"));
+    }
+
+    // ============ start_project tests ============
+
+    #[tokio::test]
+    async fn test_start_project_success() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen project start -f /path/to/project.yml",
+            success_output(""),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client
+            .start_project(Path::new("/path/to/project.yml"))
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_start_project_failure() {
+        let runner = MockCommandRunner::new();
+        runner.expect(
+            "mutagen project start -f /path/to/project.yml",
+            failure_output("some error"),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client
+            .start_project(Path::new("/path/to/project.yml"))
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("some error"));
+    }
+
+    #[tokio::test]
+    async fn test_start_project_stale_lock_removed() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_path = temp_dir.path().join("mutagen.yml");
+        let lock_path = temp_dir.path().join("mutagen.yml.lock");
+
+        // Create the project file
+        let mut project_file = std::fs::File::create(&project_path).unwrap();
+        writeln!(
+            project_file,
+            "sync:\n  test:\n    alpha: /local\n    beta: server:/remote"
+        )
+        .unwrap();
+
+        // Create the stale lock file
+        let mut lock_file = std::fs::File::create(&lock_path).unwrap();
+        writeln!(lock_file, "proj_stale_identifier").unwrap();
+
+        // Verify lock file was created
+        assert!(lock_path.exists(), "Lock file should exist before test");
+
+        // Verify get_project_lock_path returns the right path
+        let computed_lock = get_project_lock_path(&project_path);
+        assert_eq!(
+            computed_lock, lock_path,
+            "get_project_lock_path should return correct path"
+        );
+
+        let runner = MockCommandRunner::new();
+
+        // First start attempt fails with "project already running"
+        runner.expect(
+            &format!(
+                "mutagen project start -f {}",
+                project_path.to_string_lossy()
+            ),
+            failure_output("Error: project already running"),
+        );
+
+        // list_sessions returns empty (no sessions running)
+        runner.expect(
+            "mutagen sync list --template {{json .}}",
+            success_output("[]"),
+        );
+
+        // Second start attempt succeeds (after lock removal)
+        runner.expect(
+            &format!(
+                "mutagen project start -f {}",
+                project_path.to_string_lossy()
+            ),
+            success_output(""),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.start_project(&project_path).await;
+
+        assert!(result.is_ok(), "start_project should succeed");
+        assert!(
+            !lock_path.exists(),
+            "Lock file should have been removed after stale lock cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_project_already_running_with_sessions() {
+        let runner = MockCommandRunner::new();
+
+        // Start attempt fails with "project already running"
+        runner.expect(
+            "mutagen project start -f /path/to/project.yml",
+            failure_output("Error: project already running"),
+        );
+
+        // list_sessions returns sessions (project is actually running)
+        let session_json = r#"[{
+            "name": "test-session",
+            "identifier": "session-123",
+            "alpha": { "protocol": "local", "path": "/local", "connected": true, "scanned": true },
+            "beta": { "protocol": "ssh", "path": "/remote", "host": "server", "connected": true, "scanned": true },
+            "status": "Watching for changes",
+            "paused": false,
+            "conflicts": []
+        }]"#;
+        runner.expect(
+            "mutagen sync list --template {{json .}}",
+            success_output(session_json),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client
+            .start_project(Path::new("/path/to/project.yml"))
+            .await;
+
+        // Should still fail because project is actually running
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("project already running"));
     }
 }

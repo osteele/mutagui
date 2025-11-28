@@ -69,12 +69,15 @@ impl CommandRunner for SystemCommandRunner {
 }
 
 /// Mock implementation for testing that returns pre-configured responses.
+/// Supports sequential responses: if the same command is expected multiple times,
+/// each call will return the next response in the sequence.
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub struct MockCommandRunner {
-    /// Map of command strings to their expected outputs.
+    /// Map of command strings to their expected outputs (as a queue for sequential calls).
     /// Key format: "program arg1 arg2 ..."
-    responses: std::sync::Mutex<std::collections::HashMap<String, Result<Output, String>>>,
+    responses:
+        std::sync::Mutex<std::collections::HashMap<String, Vec<Result<Output, String>>>>,
     /// Record of commands that were executed (for verification)
     executed: std::sync::Mutex<Vec<String>>,
 }
@@ -89,6 +92,7 @@ impl MockCommandRunner {
     }
 
     /// Configure an expected command and its response.
+    /// If the same command is expected multiple times, responses are returned in order.
     ///
     /// # Arguments
     /// * `command` - The full command string (e.g., "mutagen sync list --template {{json .}}")
@@ -97,15 +101,20 @@ impl MockCommandRunner {
         self.responses
             .lock()
             .unwrap()
-            .insert(command.to_string(), Ok(output));
+            .entry(command.to_string())
+            .or_default()
+            .push(Ok(output));
     }
 
     /// Configure an expected command to return an error.
+    /// If the same command is expected multiple times, responses are returned in order.
     pub fn expect_error(&self, command: &str, error_msg: &str) {
         self.responses
             .lock()
             .unwrap()
-            .insert(command.to_string(), Err(error_msg.to_string()));
+            .entry(command.to_string())
+            .or_default()
+            .push(Err(error_msg.to_string()));
     }
 
     /// Get the list of commands that were executed.
@@ -129,12 +138,17 @@ impl CommandRunner for MockCommandRunner {
         // Record the execution
         self.executed.lock().unwrap().push(command.clone());
 
-        // Look up the response
-        let responses = self.responses.lock().unwrap();
-        match responses.get(&command) {
-            Some(Ok(output)) => Ok(output.clone()),
-            Some(Err(msg)) => Err(anyhow!("{}", msg)),
-            None => Err(anyhow!(
+        // Look up and consume the next response for this command
+        let mut responses = self.responses.lock().unwrap();
+        match responses.get_mut(&command) {
+            Some(queue) if !queue.is_empty() => {
+                // Take the first response from the queue
+                match queue.remove(0) {
+                    Ok(output) => Ok(output),
+                    Err(msg) => Err(anyhow!("{}", msg)),
+                }
+            }
+            _ => Err(anyhow!(
                 "MockCommandRunner: No response configured for command: {}",
                 command
             )),
