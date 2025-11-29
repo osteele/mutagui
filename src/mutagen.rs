@@ -1,4 +1,5 @@
 use crate::command::{CommandRunner, SystemCommandRunner};
+use crate::project::ProjectFile;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,28 @@ fn get_project_lock_path(project_file: &Path) -> PathBuf {
     let mut lock_path = project_file.as_os_str().to_owned();
     lock_path.push(".lock");
     PathBuf::from(lock_path)
+}
+
+/// Returns true if any running Mutagen sessions belong to the specified project file.
+/// Matches sessions by name (including "-push" variants) to avoid deleting lock files
+/// for unrelated projects.
+fn project_has_running_sessions(project_file: &Path, sessions: &[SyncSession]) -> bool {
+    if sessions.is_empty() {
+        return false;
+    }
+
+    match ProjectFile::from_path(project_file.to_path_buf()) {
+        Ok(project_file) => sessions.iter().any(|session| {
+            project_file.sessions.contains_key(&session.name)
+                || session
+                    .name
+                    .strip_suffix("-push")
+                    .is_some_and(|name| project_file.sessions.contains_key(name))
+        }),
+        // If we can't read the project file, err on the side of caution and assume
+        // the reported running sessions might belong to it.
+        Err(_) => true,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -293,10 +316,10 @@ impl<R: CommandRunner> MutagenClient<R> {
 
             // Check if failure is due to "project already running"
             if stderr.contains("project already running") {
-                // Check if there are actually any running sessions
+                // Check if there are actually any running sessions for this project
                 let sessions = self.list_sessions().await.unwrap_or_default();
-                if sessions.is_empty() {
-                    // No sessions running - this is a stale lock file
+                if !project_has_running_sessions(project_file, &sessions) {
+                    // No sessions from this project are running - stale lock file
                     // Remove it and retry
                     let lock_file = get_project_lock_path(project_file);
                     if lock_file.exists() {
@@ -951,6 +974,71 @@ mod tests {
         assert!(
             !lock_path.exists(),
             "Lock file should have been removed after stale lock cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_project_stale_lock_removed_with_other_sessions() {
+        use std::io::Write;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_path = temp_dir.path().join("mutagen.yml");
+        let lock_path = temp_dir.path().join("mutagen.yml.lock");
+
+        // Create the project file with a session definition that isn't running
+        let mut project_file = std::fs::File::create(&project_path).unwrap();
+        writeln!(
+            project_file,
+            "sync:\n  cool:\n    alpha: /cool\n    beta: server:/cool"
+        )
+        .unwrap();
+
+        // Create the stale lock file
+        std::fs::File::create(&lock_path)
+            .and_then(|mut f| writeln!(f, "another_stale_session"))
+            .unwrap();
+        assert!(lock_path.exists(), "Lock file should exist before test");
+
+        let runner = MockCommandRunner::new();
+
+        runner.expect(
+            &format!(
+                "mutagen project start -f {}",
+                project_path.to_string_lossy()
+            ),
+            failure_output("Error: project already running"),
+        );
+
+        // list_sessions returns an unrelated session that shouldn't block cleanup
+        let unrelated_sessions = r#"[{
+            "name": "unrelated-session",
+            "identifier": "session-999",
+            "alpha": { "protocol": "local", "path": "/elsewhere", "connected": true, "scanned": true },
+            "beta": { "protocol": "ssh", "path": "/remote", "host": "example.com", "connected": true, "scanned": true },
+            "status": "Watching for changes",
+            "paused": false,
+            "conflicts": []
+        }]"#;
+        runner.expect(
+            "mutagen sync list --template {{json .}}",
+            success_output(unrelated_sessions),
+        );
+
+        runner.expect(
+            &format!(
+                "mutagen project start -f {}",
+                project_path.to_string_lossy()
+            ),
+            success_output(""),
+        );
+
+        let client = MutagenClient::with_runner(runner);
+        let result = client.start_project(&project_path).await;
+
+        assert!(result.is_ok(), "start_project should succeed");
+        assert!(
+            !lock_path.exists(),
+            "Lock file should have been removed after cleaning up unrelated sessions"
         );
     }
 

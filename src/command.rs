@@ -76,8 +76,7 @@ impl CommandRunner for SystemCommandRunner {
 pub struct MockCommandRunner {
     /// Map of command strings to their expected outputs (as a queue for sequential calls).
     /// Key format: "program arg1 arg2 ..."
-    responses:
-        std::sync::Mutex<std::collections::HashMap<String, Vec<Result<Output, String>>>>,
+    responses: std::sync::Mutex<std::collections::HashMap<String, Vec<Result<Output, String>>>>,
     /// Record of commands that were executed (for verification)
     executed: std::sync::Mutex<Vec<String>>,
 }
