@@ -213,6 +213,28 @@ Shows all running sync sessions:
   - File/directory counts when available
 - **Sync status**: Current state (watching, syncing, halted, etc.)
 
+#### Session Status Icons
+
+| Icon | Status | Description |
+|------|--------|-------------|
+| 👁 | Watching | Connected and idle, waiting for file changes |
+| 🔌 | Connecting | Establishing connection to remote endpoint |
+| 🔍 | Scanning | Scanning files for changes |
+| 📦 | Staging | Staging changes for sync |
+| ⚖ | Reconciling | Reconciling differences between endpoints |
+| 💾 | Saving | Saving synchronized changes |
+| ⏳ | Transitioning | Transitioning between states |
+| ⛔ | Halted | Session halted due to error |
+| • | Unknown | Unknown or other status |
+
+#### Endpoint Connection Icons
+
+| Icon | Status |
+|------|--------|
+| ✓ | Connected and scanned |
+| ⟳ | Connected, scanning |
+| ⊗ | Disconnected |
+
 ### Projects View
 
 Shows discovered `mutagen.yml` project files:

@@ -476,27 +476,51 @@ fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let mut status_text = app
-        .status_message
-        .as_ref()
-        .map(|msg| msg.text().to_string())
-        .unwrap_or_else(|| "Ready".to_string());
+    // Build status text: show selected session status if available, otherwise show status message
+    let (mut status_text, fg_color) = if let Some(session_idx) = app.get_selected_session_index() {
+        // Session is selected - show its status
+        if let Some(session) = app.sessions.get(session_idx) {
+            let session_status = format!(
+                "{} {} — {}",
+                session.status_icon(),
+                session.name,
+                session.status
+            );
+            (session_status, app.color_scheme.status_message_fg)
+        } else {
+            (
+                app.status_message
+                    .as_ref()
+                    .map(|msg| msg.text().to_string())
+                    .unwrap_or_else(|| "Ready".to_string()),
+                app.color_scheme.status_message_fg,
+            )
+        }
+    } else {
+        // No session selected - show status message
+        let text = app
+            .status_message
+            .as_ref()
+            .map(|msg| msg.text().to_string())
+            .unwrap_or_else(|| "Ready".to_string());
+
+        let color = app
+            .status_message
+            .as_ref()
+            .map(|msg| match msg {
+                crate::app::StatusMessage::Error(_) => app.color_scheme.status_error_fg,
+                crate::app::StatusMessage::Warning(_) => app.color_scheme.status_paused_fg,
+                crate::app::StatusMessage::Info(_) => app.color_scheme.status_message_fg,
+            })
+            .unwrap_or(app.color_scheme.status_message_fg);
+
+        (text, color)
+    };
 
     if let Some(last_refresh) = app.last_refresh {
         let refresh_info = format!(" | Last refresh: {}", last_refresh.format("%H:%M:%S"));
         status_text.push_str(&refresh_info);
     }
-
-    // Choose color based on message severity
-    let fg_color = app
-        .status_message
-        .as_ref()
-        .map(|msg| match msg {
-            crate::app::StatusMessage::Error(_) => app.color_scheme.status_error_fg,
-            crate::app::StatusMessage::Warning(_) => app.color_scheme.status_paused_fg,
-            crate::app::StatusMessage::Info(_) => app.color_scheme.status_message_fg,
-        })
-        .unwrap_or(app.color_scheme.status_message_fg);
 
     let status = Paragraph::new(status_text)
         .style(Style::default().fg(fg_color))
