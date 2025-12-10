@@ -91,11 +91,22 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn display_path(&self) -> String {
+        let path = self.path_with_tilde();
         if let Some(host) = &self.host {
-            format!("{}:{}", host, self.path)
+            format!("{}:{}", host, path)
         } else {
-            self.path.clone()
+            path
         }
+    }
+
+    /// Replace home directory prefix with ~ for display
+    fn path_with_tilde(&self) -> String {
+        if let Ok(home) = std::env::var("HOME") {
+            if !home.is_empty() && self.path.starts_with(&home) {
+                return self.path.replacen(&home, "~", 1);
+            }
+        }
+        self.path.clone()
     }
 
     pub fn status_icon(&self) -> &str {
@@ -105,15 +116,6 @@ impl Endpoint {
             "⟳"
         } else {
             "✓"
-        }
-    }
-
-    pub fn stats_display(&self) -> String {
-        match (self.files, self.directories) {
-            (Some(f), Some(d)) => format!("{}f/{}d", f, d),
-            (Some(f), None) => format!("{}f", f),
-            (None, Some(d)) => format!("{}d", d),
-            (None, None) => String::new(),
         }
     }
 }
@@ -153,6 +155,30 @@ impl SyncSession {
 
     pub fn beta_display(&self) -> String {
         self.beta.display_path()
+    }
+
+    /// Map session status to a compact icon for display
+    pub fn status_icon(&self) -> &'static str {
+        let status_lower = self.status.to_lowercase();
+        if status_lower.contains("watching") {
+            "👁" // Watching for changes
+        } else if status_lower.contains("scanning") {
+            "🔍" // Scanning files
+        } else if status_lower.contains("staging") {
+            "📦" // Staging changes
+        } else if status_lower.contains("reconcil") {
+            "⚖" // Reconciling
+        } else if status_lower.contains("saving") {
+            "💾" // Saving
+        } else if status_lower.contains("connect") {
+            "🔌" // Connecting
+        } else if status_lower.contains("transition") {
+            "⏳" // Transitioning
+        } else if status_lower.contains("halt") {
+            "⛔" // Halted/error
+        } else {
+            "•" // Unknown/other
+        }
     }
 
     pub fn time_ago_display(&self) -> String {

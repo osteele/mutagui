@@ -197,145 +197,236 @@ fn get_session_display_name(app: &App, session: &crate::mutagen::SyncSession) ->
     session.name.clone()
 }
 
-fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .sessions
+/// Find which project a session belongs to, if any
+fn find_session_project<'a>(
+    app: &'a App,
+    session: &crate::mutagen::SyncSession,
+) -> Option<&'a crate::project::Project> {
+    app.projects
         .iter()
-        .enumerate()
-        .map(|(i, session)| {
-            let status_icon = if session.paused { "⏸" } else { "▶" };
-            let status_color = if session.paused {
-                app.color_scheme.status_paused_fg
-            } else {
-                app.color_scheme.status_running_fg
-            };
+        .find(|p| p.active_sessions.iter().any(|s| s.name == session.name))
+}
 
-            let display_name = get_session_display_name(app, session);
+/// Group sessions by their project for hierarchical display.
+/// Returns a list of (project_name, sessions) tuples.
+/// Projects with only one session are not grouped (project_name is None).
+fn group_sessions_by_project(
+    app: &App,
+) -> Vec<(Option<String>, Vec<&crate::mutagen::SyncSession>)> {
+    use std::collections::HashMap;
 
-            let mut spans = vec![
+    // First, group sessions by project name
+    let mut project_groups: HashMap<Option<String>, Vec<&crate::mutagen::SyncSession>> =
+        HashMap::new();
+
+    for session in &app.sessions {
+        let project_name = find_session_project(app, session).map(|p| p.file.display_name());
+        project_groups
+            .entry(project_name)
+            .or_default()
+            .push(session);
+    }
+
+    // Convert to ordered list, grouping all sessions by project
+    let mut result: Vec<(Option<String>, Vec<&crate::mutagen::SyncSession>)> = Vec::new();
+
+    // Process sessions in the order they appear in app.sessions
+    let mut processed_projects: std::collections::HashSet<Option<String>> =
+        std::collections::HashSet::new();
+
+    for session in &app.sessions {
+        let project_name = find_session_project(app, session).map(|p| p.file.display_name());
+
+        if processed_projects.contains(&project_name) {
+            continue;
+        }
+        processed_projects.insert(project_name.clone());
+
+        let sessions = project_groups.remove(&project_name).unwrap_or_default();
+        // Always use project grouping when session belongs to a project
+        result.push((project_name, sessions));
+    }
+
+    result
+}
+
+/// Build spans for a single session row (used in both flat and hierarchical modes)
+fn build_session_spans(
+    app: &App,
+    session: &crate::mutagen::SyncSession,
+    display_name: &str,
+    indent: &str,
+) -> Vec<Span<'static>> {
+    let status_icon = if session.paused { "⏸" } else { "▶" };
+    let status_color = if session.paused {
+        app.color_scheme.status_paused_fg
+    } else {
+        app.color_scheme.status_running_fg
+    };
+
+    let mut spans = vec![
+        Span::styled(indent.to_string(), Style::default()),
+        Span::styled(
+            format!("{} ", status_icon),
+            Style::default().fg(status_color),
+        ),
+        Span::styled(
+            format!("{:<30}", display_name),
+            Style::default()
+                .fg(app.color_scheme.session_name_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+    ];
+
+    match app.session_display_mode {
+        SessionDisplayMode::ShowPaths => {
+            // Session status icon (watching, scanning, etc.)
+            spans.push(Span::styled(
+                format!("{}  ", session.status_icon()),
+                Style::default().fg(app.color_scheme.session_status_fg),
+            ));
+            // Alpha endpoint status and path
+            spans.push(Span::styled(
+                session.alpha.status_icon().to_string(),
+                Style::default().fg(if session.alpha.connected {
+                    app.color_scheme.status_running_fg
+                } else {
+                    app.color_scheme.status_paused_fg
+                }),
+            ));
+            spans.push(Span::styled(
+                format!("{} ", session.alpha_display()),
+                Style::default().fg(app.color_scheme.session_alpha_fg),
+            ));
+            // Arrow and beta endpoint
+            spans.extend(vec![
+                Span::raw("⇄ ".to_string()),
                 Span::styled(
-                    format!("{} ", status_icon),
-                    Style::default().fg(status_color),
+                    session.beta.status_icon().to_string(),
+                    Style::default().fg(if session.beta.connected {
+                        app.color_scheme.status_running_fg
+                    } else {
+                        app.color_scheme.status_paused_fg
+                    }),
                 ),
                 Span::styled(
-                    format!("{:<30}", display_name), // Increased width to accommodate "project > session"
+                    session.beta_display(),
+                    Style::default().fg(app.color_scheme.session_beta_fg),
+                ),
+            ]);
+        }
+        SessionDisplayMode::ShowLastRefresh => {
+            spans.push(Span::styled(
+                format!("Last synced: {}", session.time_ago_display()),
+                Style::default().fg(app.color_scheme.session_status_fg),
+            ));
+        }
+    }
+
+    // Add push indicator for one-way-replica sessions
+    if let Some(ref mode) = session.mode {
+        if mode == "one-way-replica" {
+            spans.push(Span::raw(" ".to_string()));
+            spans.push(Span::styled(
+                "⬆".to_string(),
+                Style::default()
+                    .fg(app.color_scheme.status_running_fg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
+    // Add conflict indicator
+    if session.has_conflicts() {
+        spans.push(Span::raw(" ".to_string()));
+        spans.push(Span::styled(
+            format!(
+                "⚠ {} conflict{}",
+                session.conflict_count(),
+                if session.conflict_count() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            Style::default()
+                .fg(app.color_scheme.help_key_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    spans
+}
+
+fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
+    let groups = group_sessions_by_project(app);
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // Build a map from session index to display row for selection highlighting
+    let mut session_index = 0;
+
+    for (project_name, sessions) in &groups {
+        if let Some(project_name) = project_name {
+            // Project with sessions: show project header first
+            let session_count = sessions.len();
+            let count_text = if session_count == 1 {
+                String::new() // Don't show count for single session
+            } else {
+                format!(" ({} sessions)", session_count)
+            };
+            let header_spans = vec![
+                Span::styled(
+                    format!("┌─ {}", project_name),
                     Style::default()
                         .fg(app.color_scheme.session_name_fg)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(" "),
-            ];
-
-            match app.session_display_mode {
-                SessionDisplayMode::ShowPaths => {
-                    let alpha_stats = session.alpha.stats_display();
-                    let beta_stats = session.beta.stats_display();
-
-                    spans.push(Span::styled(
-                        session.alpha.status_icon(),
-                        Style::default().fg(if session.alpha.connected {
-                            app.color_scheme.status_running_fg
-                        } else {
-                            app.color_scheme.status_paused_fg
-                        }),
-                    ));
-                    spans.push(Span::styled(
-                        format!("{:<25}", session.alpha_display()),
-                        Style::default().fg(app.color_scheme.session_alpha_fg),
-                    ));
-
-                    if !alpha_stats.is_empty() {
-                        spans.push(Span::styled(
-                            format!("({}) ", alpha_stats),
-                            Style::default().fg(app.color_scheme.session_status_fg),
-                        ));
-                    }
-
-                    spans.extend(vec![
-                        Span::raw("⇄ "),
-                        Span::styled(
-                            session.beta.status_icon(),
-                            Style::default().fg(if session.beta.connected {
-                                app.color_scheme.status_running_fg
-                            } else {
-                                app.color_scheme.status_paused_fg
-                            }),
-                        ),
-                        Span::styled(
-                            format!("{:<25}", session.beta_display()),
-                            Style::default().fg(app.color_scheme.session_beta_fg),
-                        ),
-                    ]);
-
-                    if !beta_stats.is_empty() {
-                        spans.push(Span::styled(
-                            format!("({}) ", beta_stats),
-                            Style::default().fg(app.color_scheme.session_status_fg),
-                        ));
-                    }
-                }
-                SessionDisplayMode::ShowLastRefresh => {
-                    spans.push(Span::styled(
-                        format!("Last synced: {}", session.time_ago_display()),
-                        Style::default().fg(app.color_scheme.session_status_fg),
-                    ));
-                }
-            }
-
-            // Add push indicator for one-way-replica sessions
-            if let Some(ref mode) = session.mode {
-                if mode == "one-way-replica" {
-                    spans.push(Span::raw(" "));
-                    spans.push(Span::styled(
-                        "⬆",
-                        Style::default()
-                            .fg(app.color_scheme.status_running_fg)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                }
-            }
-
-            spans.extend(vec![
-                Span::raw(" • "),
                 Span::styled(
-                    &session.status,
+                    count_text,
                     Style::default().fg(app.color_scheme.session_status_fg),
                 ),
-            ]);
+            ];
+            items.push(ListItem::new(Line::from(header_spans)));
 
-            // Add conflict indicator
-            if session.has_conflicts() {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    format!(
-                        "⚠ {} conflict{}",
-                        session.conflict_count(),
-                        if session.conflict_count() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
-                    ),
+            // Then show indented sessions
+            for (i, session) in sessions.iter().enumerate() {
+                let is_last = i == sessions.len() - 1;
+                let prefix = if is_last { "└─ " } else { "├─ " };
+                let spans = build_session_spans(app, session, &session.name, prefix);
+
+                let is_selected = session_index + app.projects.len() == app.selected_index();
+                let style = if is_selected {
                     Style::default()
-                        .fg(app.color_scheme.help_key_fg) // Using help_key_fg for warning color
-                        .add_modifier(Modifier::BOLD),
-                ));
+                        .bg(app.color_scheme.selection_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                items.push(ListItem::new(Line::from(spans)).style(style));
+                session_index += 1;
             }
+        } else {
+            // Single session or no project: show flat (with project prefix in name)
+            for session in sessions {
+                let display_name = get_session_display_name(app, session);
+                let spans = build_session_spans(app, session, &display_name, "");
 
-            let content = Line::from(spans);
+                let is_selected = session_index + app.projects.len() == app.selected_index();
+                let style = if is_selected {
+                    Style::default()
+                        .bg(app.color_scheme.selection_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
 
-            let is_selected = i + app.projects.len() == app.selected_index();
-            let style = if is_selected {
-                Style::default()
-                    .bg(app.color_scheme.selection_bg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
-            ListItem::new(content).style(style)
-        })
-        .collect();
+                items.push(ListItem::new(Line::from(spans)).style(style));
+                session_index += 1;
+            }
+        }
+    }
 
     let list = List::new(items).block(
         Block::default()
