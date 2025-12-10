@@ -1,4 +1,4 @@
-use crate::app::{App, SessionDisplayMode};
+use crate::app::{App, SessionDisplayMode, SessionPanelItem};
 use crate::widgets::{HelpBar, StyledText};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -197,59 +197,6 @@ fn get_session_display_name(app: &App, session: &crate::mutagen::SyncSession) ->
     session.name.clone()
 }
 
-/// Find which project a session belongs to, if any
-fn find_session_project<'a>(
-    app: &'a App,
-    session: &crate::mutagen::SyncSession,
-) -> Option<&'a crate::project::Project> {
-    app.projects
-        .iter()
-        .find(|p| p.active_sessions.iter().any(|s| s.name == session.name))
-}
-
-/// Group sessions by their project for hierarchical display.
-/// Returns a list of (project_name, sessions) tuples.
-/// Projects with only one session are not grouped (project_name is None).
-fn group_sessions_by_project(
-    app: &App,
-) -> Vec<(Option<String>, Vec<&crate::mutagen::SyncSession>)> {
-    use std::collections::HashMap;
-
-    // First, group sessions by project name
-    let mut project_groups: HashMap<Option<String>, Vec<&crate::mutagen::SyncSession>> =
-        HashMap::new();
-
-    for session in &app.sessions {
-        let project_name = find_session_project(app, session).map(|p| p.file.display_name());
-        project_groups
-            .entry(project_name)
-            .or_default()
-            .push(session);
-    }
-
-    // Convert to ordered list, grouping all sessions by project
-    let mut result: Vec<(Option<String>, Vec<&crate::mutagen::SyncSession>)> = Vec::new();
-
-    // Process sessions in the order they appear in app.sessions
-    let mut processed_projects: std::collections::HashSet<Option<String>> =
-        std::collections::HashSet::new();
-
-    for session in &app.sessions {
-        let project_name = find_session_project(app, session).map(|p| p.file.display_name());
-
-        if processed_projects.contains(&project_name) {
-            continue;
-        }
-        processed_projects.insert(project_name.clone());
-
-        let sessions = project_groups.remove(&project_name).unwrap_or_default();
-        // Always use project grouping when session belongs to a project
-        result.push((project_name, sessions));
-    }
-
-    result
-}
-
 /// Build spans for a single session row (used in both flat and hierarchical modes)
 fn build_session_spans(
     app: &App,
@@ -360,70 +307,88 @@ fn build_session_spans(
 }
 
 fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
-    let groups = group_sessions_by_project(app);
     let mut items: Vec<ListItem> = Vec::new();
 
-    // Build a map from session index to display row for selection highlighting
-    let mut session_index = 0;
+    // Track which session indices belong to which project for indentation
+    let mut current_project_session_count = 0;
+    let mut current_project_total_sessions = 0;
+    let mut in_project_group = false;
 
-    for (project_name, sessions) in &groups {
-        if let Some(project_name) = project_name {
-            // Project with sessions: show project header first
-            let session_count = sessions.len();
-            let count_text = if session_count == 1 {
-                String::new() // Don't show count for single session
-            } else {
-                format!(" ({} sessions)", session_count)
-            };
-            let header_spans = vec![
-                Span::styled(
-                    format!("┌─ {}", project_name),
-                    Style::default()
-                        .fg(app.color_scheme.session_name_fg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    count_text,
-                    Style::default().fg(app.color_scheme.session_status_fg),
-                ),
-            ];
-            items.push(ListItem::new(Line::from(header_spans)));
+    for (item_index, panel_item) in app.session_panel_items.iter().enumerate() {
+        let is_selected = item_index + app.projects.len() == app.selected_index();
 
-            // Then show indented sessions
-            for (i, session) in sessions.iter().enumerate() {
-                let is_last = i == sessions.len() - 1;
-                let prefix = if is_last { "└─ " } else { "├─ " };
-                let spans = build_session_spans(app, session, &session.name, prefix);
+        match panel_item {
+            SessionPanelItem::ProjectHeader { project_index } => {
+                // Start a new project group
+                if let Some(project) = app.projects.get(*project_index) {
+                    // Count sessions that belong to this project (following items until next header or end)
+                    let session_count = app.session_panel_items[item_index + 1..]
+                        .iter()
+                        .take_while(|item| matches!(item, SessionPanelItem::Session { .. }))
+                        .count();
 
-                let is_selected = session_index + app.projects.len() == app.selected_index();
-                let style = if is_selected {
-                    Style::default()
-                        .bg(app.color_scheme.selection_bg)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
+                    current_project_session_count = 0;
+                    current_project_total_sessions = session_count;
+                    in_project_group = true;
 
-                items.push(ListItem::new(Line::from(spans)).style(style));
-                session_index += 1;
+                    let count_text = if session_count == 1 {
+                        String::new()
+                    } else {
+                        format!(" ({} sessions)", session_count)
+                    };
+
+                    let header_spans = vec![
+                        Span::styled(
+                            format!("┌─ {}", project.file.display_name()),
+                            Style::default()
+                                .fg(app.color_scheme.session_name_fg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            count_text,
+                            Style::default().fg(app.color_scheme.session_status_fg),
+                        ),
+                    ];
+
+                    let style = if is_selected {
+                        Style::default()
+                            .bg(app.color_scheme.selection_bg)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+
+                    items.push(ListItem::new(Line::from(header_spans)).style(style));
+                }
             }
-        } else {
-            // Single session or no project: show flat (with project prefix in name)
-            for session in sessions {
-                let display_name = get_session_display_name(app, session);
-                let spans = build_session_spans(app, session, &display_name, "");
+            SessionPanelItem::Session { session_index } => {
+                if let Some(session) = app.sessions.get(*session_index) {
+                    let (display_name, prefix) = if in_project_group {
+                        current_project_session_count += 1;
+                        let is_last =
+                            current_project_session_count >= current_project_total_sessions;
+                        if is_last {
+                            in_project_group = false; // Reset for next group
+                        }
+                        let prefix = if is_last { "└─ " } else { "├─ " };
+                        (session.name.clone(), prefix)
+                    } else {
+                        // Standalone session - use full display name
+                        (get_session_display_name(app, session), "")
+                    };
 
-                let is_selected = session_index + app.projects.len() == app.selected_index();
-                let style = if is_selected {
-                    Style::default()
-                        .bg(app.color_scheme.selection_bg)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
+                    let spans = build_session_spans(app, session, &display_name, prefix);
 
-                items.push(ListItem::new(Line::from(spans)).style(style));
-                session_index += 1;
+                    let style = if is_selected {
+                        Style::default()
+                            .bg(app.color_scheme.selection_bg)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+
+                    items.push(ListItem::new(Line::from(spans)).style(style));
+                }
             }
         }
     }
@@ -542,21 +507,26 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
-    let is_project_selected = app.selected_index() < app.projects.len();
+    // Check if project is selected (from Projects panel or ProjectHeader in Sessions panel)
+    let is_project_selected = app.selected_index() < app.projects.len()
+        || app.get_selected_session_panel_project_index().is_some();
+
+    // Check if a session (not project header) is selected in sessions panel
+    let is_session_selected = app.get_selected_session_index().is_some();
 
     let mut help_bar = HelpBar::new(&app.color_scheme)
         .item("↑/↓", "Nav")
         .item("Tab", "Switch Area")
         .item("m", "Mode");
 
-    if is_project_selected {
-        // Project-specific commands
+    if is_project_selected && !is_session_selected {
+        // Project-specific commands (either from Projects panel or ProjectHeader in Sessions panel)
         help_bar = help_bar
             .item("↵", "Edit")
             .item("s", "Start/Stop")
             .item("p", "Push")
             .item("Space", "Pause/Resume");
-    } else {
+    } else if is_session_selected {
         // Session-specific commands
         help_bar = help_bar
             .item("Space", "Pause/Resume")

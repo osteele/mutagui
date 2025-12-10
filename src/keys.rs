@@ -191,7 +191,7 @@ pub async fn handle_key_event<B: Backend>(
 
 /// Handle Enter key - edit selected project file.
 fn handle_enter_key<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
-    if let Some(project_idx) = app.get_selected_project_index() {
+    if let Some(project_idx) = app.get_effective_project_index() {
         if let Some(project) = app.projects.get(project_idx) {
             let editor = get_editor();
             let file_path = &project.file.path;
@@ -270,13 +270,13 @@ async fn handle_start_stop_project<B: Backend>(
 /// Handle 'p' key - pause session or create push session.
 async fn handle_pause_or_push<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
     if app.get_selected_session_index().is_some() {
-        // Session selected: pause it
+        // Individual session selected: pause it
         app.pause_selected().await;
-    } else {
-        // Project selected: create push session
+    } else if app.get_effective_project_index().is_some() {
+        // Project selected (from either panel or session panel header): create push session
         if !app.selected_project_has_sessions() {
             // Count sessions to create for proper plural message
-            let session_count = if let Some(project_idx) = app.get_selected_project_index() {
+            let session_count = if let Some(project_idx) = app.get_effective_project_index() {
                 app.projects
                     .get(project_idx)
                     .map(|p| p.file.sessions.len())
@@ -307,10 +307,10 @@ async fn handle_pause_or_push<B: Backend>(app: &mut App, terminal: &mut Terminal
 
 /// Handle space key - toggle pause for session or all project sessions.
 async fn handle_toggle_pause<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
-    // Check if operating on project (multiple sessions) or single session
-    if app.get_selected_project_index().is_some() && app.get_selected_session_index().is_none() {
+    // Check if operating on project (from either panel or header) vs single session
+    if app.get_effective_project_index().is_some() && app.get_selected_session_index().is_none() {
         // Project selected: show blocking modal for pause/resume all
-        let has_running = if let Some(project_idx) = app.get_selected_project_index() {
+        let has_running = if let Some(project_idx) = app.get_effective_project_index() {
             if let Some(project) = app.projects.get(project_idx) {
                 project.active_sessions.iter().any(|s| !s.paused)
             } else {

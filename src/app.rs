@@ -10,6 +10,22 @@ use std::path::PathBuf;
 // Re-export FocusArea for external use (e.g., in ui.rs)
 pub use crate::selection::FocusArea;
 
+/// Represents a selectable item in the sessions panel.
+/// This includes both project headers (for grouped sessions) and individual sessions.
+#[derive(Debug, Clone)]
+pub enum SessionPanelItem {
+    /// A project header row (for grouping sessions under a project)
+    ProjectHeader {
+        /// Index into app.projects
+        project_index: usize,
+    },
+    /// An individual session row
+    Session {
+        /// Index into app.sessions
+        session_index: usize,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionDisplayMode {
     ShowPaths,
@@ -65,6 +81,64 @@ fn get_session_sort_key(session: &SyncSession, projects: &[Project]) -> String {
     session.name.clone()
 }
 
+/// Find which project a session belongs to (by index), if any.
+fn find_session_project_index(session: &SyncSession, projects: &[Project]) -> Option<usize> {
+    projects
+        .iter()
+        .position(|p| p.active_sessions.iter().any(|s| s.name == session.name))
+}
+
+/// Build the list of selectable items for the sessions panel.
+/// Groups sessions by project and creates a flat list with project headers followed by their sessions.
+fn build_session_panel_items(
+    sessions: &[SyncSession],
+    projects: &[Project],
+) -> Vec<SessionPanelItem> {
+    use std::collections::{HashMap, HashSet};
+
+    // First, group sessions by project
+    let mut project_sessions: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
+    for (session_idx, session) in sessions.iter().enumerate() {
+        let project_idx = find_session_project_index(session, projects);
+        project_sessions
+            .entry(project_idx)
+            .or_default()
+            .push(session_idx);
+    }
+
+    // Build the display list in order sessions appear
+    let mut result = Vec::new();
+    let mut processed_projects: HashSet<Option<usize>> = HashSet::new();
+
+    for session in sessions {
+        let project_idx = find_session_project_index(session, projects);
+
+        if processed_projects.contains(&project_idx) {
+            continue;
+        }
+        processed_projects.insert(project_idx);
+
+        let session_indices = project_sessions.remove(&project_idx).unwrap_or_default();
+
+        if let Some(proj_idx) = project_idx {
+            // Project with sessions: add header first, then sessions
+            result.push(SessionPanelItem::ProjectHeader {
+                project_index: proj_idx,
+            });
+            for idx in session_indices {
+                result.push(SessionPanelItem::Session { session_index: idx });
+            }
+        } else {
+            // Standalone sessions (no project): add directly
+            for idx in session_indices {
+                result.push(SessionPanelItem::Session { session_index: idx });
+            }
+        }
+    }
+
+    result
+}
+
 #[derive(Debug, Clone)]
 pub struct BlockingOperation {
     pub message: String,
@@ -73,6 +147,8 @@ pub struct BlockingOperation {
 pub struct App {
     pub sessions: Vec<SyncSession>,
     pub projects: Vec<Project>,
+    /// Ordered list of selectable items in the sessions panel (project headers + sessions)
+    pub session_panel_items: Vec<SessionPanelItem>,
     selection: SelectionManager,
     pub should_quit: bool,
     pub status_message: Option<StatusMessage>,
@@ -108,6 +184,7 @@ impl App {
         Self {
             sessions: Vec::new(),
             projects: Vec::new(),
+            session_panel_items: Vec::new(),
             selection: SelectionManager::new(),
             should_quit: false,
             status_message: None,
@@ -202,9 +279,14 @@ impl App {
                     }
                 }
 
+                // Build session panel items (project headers + sessions in display order)
+                self.session_panel_items =
+                    build_session_panel_items(&self.sessions, &self.projects);
+
                 // Update selection manager with new list sizes (handles clamping and focus)
+                // Use session_panel_items.len() which includes both project headers and sessions
                 self.selection
-                    .update_sizes(self.projects.len(), self.sessions.len());
+                    .update_sizes(self.projects.len(), self.session_panel_items.len());
 
                 self.last_refresh = Some(Local::now());
                 // Only show "Sessions refreshed" if there's no status message, or if showing the temporary "Creating push session..." message
@@ -289,16 +371,45 @@ impl App {
         }
     }
 
+    /// Get the selected project index from the Projects panel.
     pub fn get_selected_project_index(&self) -> Option<usize> {
         self.selection.selected_project()
     }
 
+    /// Get the currently selected item in the sessions panel.
+    pub fn get_selected_session_panel_item(&self) -> Option<&SessionPanelItem> {
+        self.selection
+            .selected_session()
+            .and_then(|idx| self.session_panel_items.get(idx))
+    }
+
+    /// Get the selected session index (from either the sessions panel Session item).
+    /// Returns None if a ProjectHeader is selected in the sessions panel.
     pub fn get_selected_session_index(&self) -> Option<usize> {
-        self.selection.selected_session()
+        match self.get_selected_session_panel_item() {
+            Some(SessionPanelItem::Session { session_index }) => Some(*session_index),
+            _ => None,
+        }
+    }
+
+    /// Get the project index if a ProjectHeader is selected in the sessions panel.
+    pub fn get_selected_session_panel_project_index(&self) -> Option<usize> {
+        match self.get_selected_session_panel_item() {
+            Some(SessionPanelItem::ProjectHeader { project_index }) => Some(*project_index),
+            _ => None,
+        }
+    }
+
+    /// Get the effective selected project index from either:
+    /// - Projects panel selection, OR
+    /// - A ProjectHeader selected in the sessions panel
+    pub fn get_effective_project_index(&self) -> Option<usize> {
+        self.get_selected_project_index()
+            .or_else(|| self.get_selected_session_panel_project_index())
     }
 
     pub fn selected_project_has_sessions(&self) -> bool {
-        if let Some(project_idx) = self.get_selected_project_index() {
+        if let Some(project_idx) = self.get_effective_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 return !project.active_sessions.is_empty();
             }
@@ -362,9 +473,11 @@ impl App {
                             session.name
                         )));
                         self.sessions.remove(idx);
-                        // Update selection manager with new list sizes (handles clamping)
+                        // Rebuild session panel items and update selection manager
+                        self.session_panel_items =
+                            build_session_panel_items(&self.sessions, &self.projects);
                         self.selection
-                            .update_sizes(self.projects.len(), self.sessions.len());
+                            .update_sizes(self.projects.len(), self.session_panel_items.len());
                     }
                     Err(e) => {
                         self.status_message =
@@ -395,7 +508,7 @@ impl App {
     }
 
     pub async fn start_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_selected_project_index() {
+        if let Some(project_idx) = self.get_effective_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 match self.mutagen_client.start_project(&project.file.path).await {
                     Ok(_) => {
@@ -416,7 +529,7 @@ impl App {
     }
 
     pub async fn toggle_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_selected_project_index() {
+        if let Some(project_idx) = self.get_effective_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 // Use project.is_active() which checks if there are active sessions
                 let is_running = project.is_active();
@@ -457,7 +570,7 @@ impl App {
     }
 
     pub async fn push_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_selected_project_index() {
+        if let Some(project_idx) = self.get_effective_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 // Terminate all active sessions for this project before creating push sessions
                 for session in &project.active_sessions {
@@ -568,7 +681,7 @@ impl App {
     }
 
     pub async fn pause_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_selected_project_index() {
+        if let Some(project_idx) = self.get_effective_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 if project.active_sessions.is_empty() {
                     self.status_message = Some(StatusMessage::info("No active sessions to pause"));
@@ -609,7 +722,7 @@ impl App {
     }
 
     pub async fn resume_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_selected_project_index() {
+        if let Some(project_idx) = self.get_effective_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 if project.active_sessions.is_empty() {
                     self.status_message = Some(StatusMessage::info("No active sessions to resume"));
@@ -655,6 +768,7 @@ impl App {
 
     pub async fn toggle_pause_selected(&mut self) {
         if let Some(idx) = self.get_selected_session_index() {
+            // Individual session selected - toggle its pause state
             if let Some(session) = self.sessions.get(idx) {
                 if session.paused {
                     self.resume_selected().await;
@@ -662,7 +776,8 @@ impl App {
                     self.pause_selected().await;
                 }
             }
-        } else if let Some(project_idx) = self.get_selected_project_index() {
+        } else if let Some(project_idx) = self.get_effective_project_index() {
+            // Project selected (from either panel) - toggle pause for all its sessions
             if let Some(project) = self.projects.get(project_idx) {
                 // Only pause/resume if project has active sessions
                 if project.active_sessions.is_empty() {
