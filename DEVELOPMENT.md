@@ -1,97 +1,62 @@
-# Contributing to Mutagen TUI
+# Development Guide
 
-Thank you for your interest in contributing to Mutagen TUI! This guide will help you get started with development.
+## Project Overview
+
+**mutagui** is a terminal user interface (TUI) for managing [Mutagen](https://mutagen.io/) sync sessions. It provides real-time monitoring and control of file synchronization sessions with automatic theme detection and auto-refresh capabilities.
 
 ## Prerequisites
 
-- [Mutagen](https://mutagen.io/) must be installed and in your PATH
-- Rust toolchain (install via [rustup](https://rustup.rs/))
+- **Mutagen CLI** must be installed and available in PATH
+- Rust toolchain for building
 
-## Getting Started
+## Version Control
 
-### Clone and Build
-
-```bash
-# Clone or navigate to the repository
-cd mutagui
-
-# Build and install locally
-just install
-
-# Or manually with cargo
-cargo install --path .
-```
+This project uses **Jujutsu (jj)** for version control (with Git as a backing store). Use `jj` commands for all version control operations.
 
 ## Development Commands
 
 ### Building
-
-```bash
-just build        # Release build
-just build-debug  # Debug build
-```
-
-Or directly with cargo:
-
 ```bash
 cargo build              # Debug build
 cargo build --release    # Optimized release build
 ```
 
 ### Running
-
-```bash
-just run          # Run in debug mode
-just run-release  # Run optimized version
-```
-
-Or directly with cargo:
-
 ```bash
 cargo run                # Run in development mode
 cargo run --release      # Run optimized version
 ```
 
 ### Testing
-
-```bash
-just test         # Run tests
-just check        # Run format check, lint, and tests
-```
-
-Or directly with cargo:
-
 ```bash
 cargo test               # Run all tests
 ```
 
 ### Code Quality
-
-```bash
-just format       # Format code
-just lint         # Run clippy
-just fix          # Auto-fix formatting and linting issues
-```
-
-Or directly with cargo:
-
 ```bash
 cargo fmt                                                      # Format code
 cargo clippy                                                   # Run linter
 cargo fmt && cargo clippy --fix --allow-staged --allow-dirty  # Auto-fix issues
 ```
 
+### Installation
+```bash
+cargo install --path .   # Install to ~/.cargo/bin/mutagui
+```
+
 ## Architecture
 
-The application is structured into several modules with clear separation of concerns:
-
 ### Module Structure
+
+The application follows a modular architecture with clear separation of concerns:
 
 - **main.rs** - Entry point and event loop
   - Sets up terminal (crossterm + ratatui)
   - Runs async event loop with 100ms polling interval
   - Handles keyboard events and auto-refresh triggers
   - Cleans up terminal on exit
+  - Editor integration: Detects editor from `$VISUAL`, `$EDITOR`, or defaults to `vim`
+  - Terminal mode switching: Properly suspends TUI mode when launching external editors
 
 - **app.rs** - Application state management
   - `App` struct holds all application state (sessions, projects, selection, theme)
@@ -116,25 +81,9 @@ The application is structured into several modules with clear separation of conc
   - Provides two color schemes with appropriate contrast
   - Theme is detected once at startup
 
-- **ui.rs** - TUI rendering
-  - Renders the interface using ratatui
-  - Handles both Sessions and Projects view modes
-  - Displays session status, endpoints, and project information
+- **ui.rs** - TUI rendering using ratatui
 
-### Key Dependencies
-
-- **ratatui**: Terminal UI framework
-- **crossterm**: Cross-platform terminal manipulation
-- **tokio**: Async runtime
-- **serde**: Serialization framework (JSON)
-- **serde_yaml**: YAML parsing for mutagen.yml files
-- **glob**: Pattern matching for file discovery
-- **clap**: Command-line argument parsing
-- **anyhow**: Error handling
-- **chrono**: Date and time handling
-- **terminal-light**: Terminal background detection for theme adaptation
-
-### Design Patterns
+### Key Design Patterns
 
 **Async Runtime**: Uses Tokio for async operations, though most operations are synchronous wrappers around CLI commands.
 
@@ -165,22 +114,6 @@ The application is structured into several modules with clear separation of conc
    - Session list refreshes automatically
 4. **Rendering**: UI module reads from `App` state and renders using ratatui
 
-## Implementation Notes
-
-### Auto-refresh Behavior
-
-- The application automatically refreshes every 3 seconds to show live updates
-- Terminal background is detected once at startup to choose appropriate color scheme (light/dark)
-- The application polls Mutagen CLI commands to get session information
-- All operations that modify sessions automatically refresh the session list
-- The application requires that `mutagen` command is available in PATH
-
-### Project File Discovery
-
-The application searches for `mutagen.yml` files starting from the current directory (or the directory specified with `--project-dir`). See the main README for user-facing documentation on search locations.
-
-**Performance:** The search uses non-recursive patterns for fast startup. No `**/` glob patterns are used to avoid scanning thousands of files.
-
 ## Testing Considerations
 
 - **Mutagen dependency**: Tests that interact with actual Mutagen sessions require a running Mutagen daemon
@@ -192,9 +125,25 @@ The application searches for `mutagen.yml` files starting from the current direc
 ### Adding a new keyboard command
 
 1. Add key handler in `main.rs::run_app()` match statement
-2. Add corresponding method to `App` in `app.rs`
+2. Add corresponding method to `App` in `app.rs` (if needed)
 3. If it modifies sessions, call `app.refresh_sessions().await?` after the operation
 4. Update help text in `ui.rs` (if applicable)
+
+For the complete keyboard bindings list, see README.md.
+
+### Editor Integration
+
+Editor launching uses hybrid GUI detection to determine terminal handling:
+- **GUI editors** (VS Code, Zed, etc.): TUI remains active, editor spawns without terminal disruption
+- **Terminal editors** (vim, nano, etc.): TUI suspends (disables raw mode, leaves alternate screen), then restores after editor exits
+
+Detection logic (`main.rs::is_gui_editor()`):
+1. User override via `MUTAGUI_EDITOR_IS_GUI` env var
+2. SSH detection (assumes terminal editor over SSH)
+3. Hardcoded list of ~20 GUI editors
+4. Hardcoded list of ~15 terminal editors
+5. macOS .app path detection
+6. Default: terminal editor (safe fallback)
 
 ### Adding a new Mutagen operation
 
@@ -211,22 +160,3 @@ The application searches for `mutagen.yml` files starting from the current direc
 1. Update structs in `mutagen.rs` (add serde derive attributes)
 2. Test with actual `mutagen sync list --template '{{json .}}'` output
 3. Update display logic in `ui.rs` if needed
-
-## Version Control
-
-This project uses **Jujutsu (jj)** for version control (with Git as a backing store). Use `jj` commands for version control operations:
-
-```bash
-jj status        # Check working copy status
-jj diff          # View changes
-jj describe      # Set commit description
-jj log           # View commit history
-```
-
-## Additional Resources
-
-For detailed architectural information and design decisions, see [CLAUDE.md](CLAUDE.md).
-
-## Questions or Issues?
-
-Feel free to open an issue on GitHub if you have questions or encounter problems during development.
