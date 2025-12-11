@@ -70,6 +70,22 @@ pub struct Conflict {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StagingProgress {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(rename = "receivedSize", default)]
+    pub received_size: Option<u64>,
+    #[serde(rename = "expectedSize", default)]
+    pub expected_size: Option<u64>,
+    #[serde(rename = "receivedFiles", default)]
+    pub received_files: Option<u64>,
+    #[serde(rename = "expectedFiles", default)]
+    pub expected_files: Option<u64>,
+    #[serde(rename = "totalReceivedSize", default)]
+    pub total_received_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Endpoint {
     pub protocol: String,
     pub path: String,
@@ -87,6 +103,8 @@ pub struct Endpoint {
     pub symbolic_links: Option<u64>,
     #[serde(rename = "totalFileSize", default)]
     pub total_file_size: Option<u64>,
+    #[serde(rename = "stagingProgress", default)]
+    pub staging_progress: Option<StagingProgress>,
 }
 
 impl Endpoint {
@@ -179,6 +197,54 @@ impl SyncSession {
         } else {
             "•" // Unknown/other
         }
+    }
+
+    /// Map session status to a human-readable text description
+    pub fn status_text(&self) -> &'static str {
+        let status_lower = self.status.to_lowercase();
+        // Handle both full text ("Watching for changes") and JSON codes ("watching", "staging-beta")
+        if status_lower.contains("watching") {
+            "Watching"
+        } else if status_lower.contains("scanning") {
+            "Scanning"
+        } else if status_lower.contains("staging") {
+            "Staging"
+        } else if status_lower.contains("reconcil") {
+            "Reconciling"
+        } else if status_lower.contains("saving") {
+            "Saving"
+        } else if status_lower.contains("connect") {
+            "Connecting"
+        } else if status_lower.contains("transition") {
+            "Transitioning"
+        } else if status_lower.contains("halt") {
+            "Halted"
+        } else if status_lower.contains("waiting") {
+            "Waiting"
+        } else {
+            "Unknown"
+        }
+    }
+
+    /// Get progress percentage from staging progress if available
+    pub fn progress_percentage(&self) -> Option<u8> {
+        // Check beta endpoint for staging progress (more common for push operations)
+        if let Some(ref progress) = self.beta.staging_progress {
+            if let (Some(received), Some(expected)) = (progress.received_files, progress.expected_files) {
+                if expected > 0 {
+                    return Some(((received * 100) / expected).min(100) as u8);
+                }
+            }
+        }
+        // Check alpha endpoint for staging progress
+        if let Some(ref progress) = self.alpha.staging_progress {
+            if let (Some(received), Some(expected)) = (progress.received_files, progress.expected_files) {
+                if expected > 0 {
+                    return Some(((received * 100) / expected).min(100) as u8);
+                }
+            }
+        }
+        None
     }
 
     pub fn time_ago_display(&self) -> String {

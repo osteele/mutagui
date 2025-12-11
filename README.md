@@ -220,12 +220,24 @@ Shows all running sync sessions:
 | 👁 | Watching | Connected and idle, waiting for file changes |
 | 🔌 | Connecting | Establishing connection to remote endpoint |
 | 🔍 | Scanning | Scanning files for changes |
-| 📦 | Staging | Staging changes for sync |
-| ⚖ | Reconciling | Reconciling differences between endpoints |
+| 📦 | Staging | Transferring file content that needs to be synced |
+| ⚖ | Reconciling | Computing what changes to make on each side |
+| ⏳ | Transitioning | Applying changes (writes/deletes/modifications) to the filesystem |
 | 💾 | Saving | Saving synchronized changes |
-| ⏳ | Transitioning | Transitioning between states |
 | ⛔ | Halted | Session halted due to error |
 | • | Unknown | Unknown or other status |
+
+#### Sync Cycle
+
+When syncing, Mutagen progresses through these phases:
+
+1. **Scanning** → Examines both endpoints for changes
+2. **Staging** → Transfers file content that needs to be synced
+3. **Reconciling** → Computes what changes to make on each side
+4. **Transitioning** → Applies the changes to the filesystem
+5. **Watching** → Monitors for new file changes
+
+The Status area shows progress percentage during staging (e.g., "Staging (45%)").
 
 #### Endpoint Connection Icons
 

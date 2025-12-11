@@ -864,6 +864,7 @@ sync:
                 files: None,
                 symbolic_links: None,
                 total_file_size: None,
+                staging_progress: None,
             },
             beta: Endpoint {
                 protocol: "ssh".to_string(),
@@ -875,6 +876,7 @@ sync:
                 files: None,
                 symbolic_links: None,
                 total_file_size: None,
+                staging_progress: None,
             },
             status: "Watching for changes".to_string(),
             paused: false,

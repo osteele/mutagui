@@ -480,13 +480,25 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (mut status_text, fg_color) = if let Some(session_idx) = app.get_selected_session_index() {
         // Session is selected - show its status
         if let Some(session) = app.sessions.get(session_idx) {
-            let session_status = format!(
-                "{} {} — {}",
-                session.status_icon(),
-                session.name,
-                session.status
-            );
-            (session_status, app.color_scheme.status_message_fg)
+            // Build detailed status: "Name: Status"
+            let mut parts = vec![session.name.clone(), ": ".to_string(), session.status_text().to_string()];
+
+            // Add progress percentage if available
+            if let Some(pct) = session.progress_percentage() {
+                parts.push(format!(" ({}%)", pct));
+            }
+
+            // Add conflict count if any
+            let conflict_count = session.conflict_count();
+            if conflict_count > 0 {
+                parts.push(format!(
+                    " | {} conflict{}",
+                    conflict_count,
+                    if conflict_count == 1 { "" } else { "s" }
+                ));
+            }
+
+            (parts.join(""), app.color_scheme.status_message_fg)
         } else {
             (
                 app.status_message
