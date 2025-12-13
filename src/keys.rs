@@ -148,14 +148,14 @@ pub async fn handle_key_event<B: Backend>(
             }
             Ok(KeyAction::Continue)
         }
-        KeyCode::Char('l') | KeyCode::Right => {
-            // Unfold selected project
+        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+            // Toggle fold for selected project
             if let Some(proj_idx) = app.get_selected_project_index() {
                 app.toggle_project_fold(proj_idx);
             }
             Ok(KeyAction::Continue)
         }
-        KeyCode::Enter => {
+        KeyCode::Char('e') => {
             handle_enter_key(app, terminal)?;
             Ok(KeyAction::Refresh)
         }
@@ -207,11 +207,25 @@ fn handle_enter_key<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Re
             let file_path = &project.file.path;
             let is_gui = is_gui_editor(&editor);
 
-            let status = if is_gui {
-                // GUI editor - don't touch terminal, just spawn
-                Command::new(&editor).arg(file_path).status()
+            if is_gui {
+                // GUI editor - spawn detached, don't wait
+                match Command::new(&editor).arg(file_path).spawn() {
+                    Ok(_) => {
+                        app.status_message = Some(StatusMessage::info(format!(
+                            "Opened in {}: {}",
+                            editor,
+                            project.file.display_name()
+                        )));
+                    }
+                    Err(e) => {
+                        app.status_message = Some(StatusMessage::error(format!(
+                            "Failed to launch editor: {}",
+                            e
+                        )));
+                    }
+                }
             } else {
-                // Terminal editor - suspend TUI
+                // Terminal editor - suspend TUI and wait for editor to exit
                 disable_raw_mode()?;
                 execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
                 terminal.show_cursor()?;
@@ -223,28 +237,26 @@ fn handle_enter_key<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Re
                 execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
                 terminal.hide_cursor()?;
 
-                status
-            };
-
-            // Handle editor result
-            match status {
-                Ok(exit_status) if exit_status.success() => {
-                    app.status_message = Some(StatusMessage::info(format!(
-                        "Edited: {}",
-                        project.file.display_name()
-                    )));
-                }
-                Ok(exit_status) => {
-                    app.status_message = Some(StatusMessage::warning(format!(
-                        "Editor exited with code: {}",
-                        exit_status.code().unwrap_or(-1)
-                    )));
-                }
-                Err(e) => {
-                    app.status_message = Some(StatusMessage::error(format!(
-                        "Failed to launch editor: {}",
-                        e
-                    )));
+                // Handle editor result
+                match status {
+                    Ok(exit_status) if exit_status.success() => {
+                        app.status_message = Some(StatusMessage::info(format!(
+                            "Edited: {}",
+                            project.file.display_name()
+                        )));
+                    }
+                    Ok(exit_status) => {
+                        app.status_message = Some(StatusMessage::warning(format!(
+                            "Editor exited with code: {}",
+                            exit_status.code().unwrap_or(-1)
+                        )));
+                    }
+                    Err(e) => {
+                        app.status_message = Some(StatusMessage::error(format!(
+                            "Failed to launch editor: {}",
+                            e
+                        )));
+                    }
                 }
             }
         }
@@ -277,40 +289,40 @@ async fn handle_start_stop_project<B: Backend>(
     Ok(())
 }
 
-/// Handle 'p' key - pause session or create push session.
+/// Handle 'p' key - create push session.
 async fn handle_pause_or_push<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
     if app.selection.is_spec_selected() {
-        // Individual spec selected: pause it
-        app.pause_selected().await;
+        // Individual spec selected: create push session (replaces two-way if running)
+        app.blocking_op = Some(BlockingOperation {
+            message: "Creating push session...".to_string(),
+        });
+        terminal.draw(|f| ui::draw(f, app))?;
+
+        app.push_selected_spec().await;
+        app.blocking_op = None;
     } else if app.selection.is_project_selected() {
-        // Project selected: create push session
-        if !app.selected_project_has_running_specs() {
-            // Count sessions to create for proper plural message
-            let session_count = if let Some(project_idx) = app.get_selected_project_index() {
-                app.projects
-                    .get(project_idx)
-                    .map(|p| p.file.sessions.len())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            let message = if session_count == 1 {
-                "Creating push session...".to_string()
-            } else {
-                format!("Creating {} push sessions...", session_count)
-            };
-
-            // Show blocking modal before operation
-            app.blocking_op = Some(BlockingOperation { message });
-            terminal.draw(|f| ui::draw(f, app))?;
-
-            app.push_selected_project().await;
-            app.blocking_op = None;
+        // Project selected: create push sessions for all specs (replaces two-way sessions)
+        // Count sessions to create for proper plural message
+        let session_count = if let Some(project_idx) = app.get_selected_project_index() {
+            app.projects
+                .get(project_idx)
+                .map(|p| p.file.sessions.len())
+                .unwrap_or(0)
         } else {
-            app.status_message = Some(StatusMessage::warning(
-                "Cannot push: project has running specs. Stop the project first.",
-            ));
-        }
+            0
+        };
+        let message = if session_count == 1 {
+            "Creating push session...".to_string()
+        } else {
+            format!("Creating {} push sessions...", session_count)
+        };
+
+        // Show blocking modal before operation
+        app.blocking_op = Some(BlockingOperation { message });
+        terminal.draw(|f| ui::draw(f, app))?;
+
+        app.push_selected_project().await;
+        app.blocking_op = None;
     }
     Ok(())
 }

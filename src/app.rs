@@ -38,11 +38,6 @@ impl StatusMessage {
             Self::Info(s) | Self::Warning(s) | Self::Error(s) => s,
         }
     }
-
-    #[allow(dead_code)] // Part of public API, may be used in future
-    pub fn is_error(&self) -> bool {
-        matches!(self, Self::Error(_))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -107,8 +102,6 @@ impl App {
     pub async fn refresh_sessions(&mut self) -> Result<()> {
         match self.mutagen_client.list_sessions().await {
             Ok(sessions) => {
-                let now = Local::now();
-
                 // Track when successfulCycles changes to detect actual sync activity
                 // We need to preserve sync_time from previous refresh
                 let is_first_refresh = self.projects.is_empty();
@@ -132,7 +125,7 @@ impl App {
                             let new_cycles = new_session.successful_cycles.unwrap_or(0);
                             let old_cycles = old_session.successful_cycles.unwrap_or(0);
                             if new_cycles > old_cycles {
-                                new_session.sync_time = crate::mutagen::SyncTime::At(now);
+                                new_session.sync_time = crate::mutagen::SyncTime::At;
                             } else {
                                 // Keep the previous sync_time
                                 new_session.sync_time = old_session.sync_time.clone();
@@ -146,7 +139,7 @@ impl App {
                                 // Session discovered after first refresh
                                 let cycles = new_session.successful_cycles.unwrap_or(0);
                                 new_session.sync_time = if cycles > 0 {
-                                    crate::mutagen::SyncTime::At(now)
+                                    crate::mutagen::SyncTime::At
                                 } else {
                                     crate::mutagen::SyncTime::Never
                                 };
@@ -156,6 +149,13 @@ impl App {
                     })
                     .collect();
 
+                // Save current fold state before rebuilding projects
+                let fold_state: std::collections::HashMap<_, _> = self
+                    .projects
+                    .iter()
+                    .map(|p| (p.file.path.clone(), p.folded))
+                    .collect();
+
                 match discover_project_files(
                     self.project_dir.as_deref(),
                     Some(&self.config.projects),
@@ -163,6 +163,14 @@ impl App {
                     Ok(project_files) => {
                         self.projects =
                             correlate_projects_with_sessions(project_files, &new_sessions);
+
+                        // Restore fold state for existing projects, use auto-unfold for new ones
+                        for project in &mut self.projects {
+                            if let Some(&saved_folded) = fold_state.get(&project.file.path) {
+                                project.folded = saved_folded;
+                            }
+                            // Otherwise keep the auto-unfold value from correlate_projects_with_sessions
+                        }
 
                         // Sort projects alphabetically by display name
                         self.projects
@@ -420,6 +428,7 @@ impl App {
                 // Create push sessions for ALL sessions in the project
                 let mut created_count = 0;
                 let mut errors: Vec<(String, String)> = Vec::new();
+                let total_sessions = project.file.sessions.len();
 
                 // Get defaults for ignore patterns
                 let defaults_value = project
@@ -484,22 +493,29 @@ impl App {
 
                 // Set status message based on results
                 if created_count > 0 && errors.is_empty() {
-                    self.status_message = Some(StatusMessage::info(format!(
-                        "Created {} push session(s)",
-                        created_count
-                    )));
+                    let msg = if created_count == total_sessions {
+                        format!("Created {} push session(s)", created_count)
+                    } else {
+                        format!("Created {} of {} push session(s)", created_count, total_sessions)
+                    };
+                    self.status_message = Some(StatusMessage::info(msg));
                 } else if created_count > 0 && !errors.is_empty() {
+                    // Show first error for context
+                    let first_error = &errors[0];
                     self.status_message = Some(StatusMessage::warning(format!(
-                        "Created {} push session(s), {} failed",
+                        "Created {} push session(s), {} failed. First error: {}: {}",
                         created_count,
-                        errors.len()
+                        errors.len(),
+                        first_error.0,
+                        first_error.1
                     )));
                 } else {
                     // All failed
                     let error_msg = if errors.len() == 1 {
-                        format!("Failed to create push session: {}", errors[0].1)
+                        format!("Failed to create push session {}: {}", errors[0].0, errors[0].1)
                     } else {
-                        format!("Failed to create {} push sessions", errors.len())
+                        let error_details: Vec<String> = errors.iter().map(|(name, err)| format!("{}: {}", name, err)).collect();
+                        format!("Failed to create {} push sessions: {}", errors.len(), error_details.join("; "))
                     };
                     self.status_message = Some(StatusMessage::error(error_msg));
                 }
@@ -508,6 +524,105 @@ impl App {
             }
         } else {
             self.status_message = Some(StatusMessage::error("No project selected"));
+        }
+    }
+
+    /// Create a push session for the selected spec, replacing any existing two-way session.
+    pub async fn push_selected_spec(&mut self) {
+        if let Some((project_idx, spec_idx)) = self.selection.selected_spec() {
+            if let Some(project) = self.projects.get(project_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    // Terminate any running two-way session for this spec
+                    if let Some(session) = &spec.running_session {
+                        if spec.state == crate::project::SyncSpecState::RunningTwoWay {
+                            let _ = self
+                                .mutagen_client
+                                .terminate_session(&session.identifier)
+                                .await;
+                        }
+                    }
+
+                    // Get the session definition from the project file
+                    if let Some(session_def) = project.file.sessions.get(&spec.name) {
+                        let push_name = format!("{}-push", spec.name);
+
+                        // Get defaults for ignore patterns
+                        let defaults_value = project
+                            .file
+                            .defaults
+                            .as_ref()
+                            .and_then(|defaults| serde_yaml::to_value(defaults).ok());
+
+                        // Extract ignore patterns, merging with defaults
+                        let ignore_patterns = session_def.get_ignore_patterns(defaults_value.as_ref());
+                        let ignore = if ignore_patterns.is_empty() {
+                            None
+                        } else {
+                            Some(ignore_patterns)
+                        };
+
+                        // Ensure both endpoints' parent directories exist
+                        if let Err(e) = self
+                            .mutagen_client
+                            .ensure_endpoint_directory_exists(&session_def.alpha)
+                            .await
+                        {
+                            self.status_message = Some(StatusMessage::error(format!(
+                                "Failed to create alpha directory: {}",
+                                e
+                            )));
+                            return;
+                        }
+                        if let Err(e) = self
+                            .mutagen_client
+                            .ensure_endpoint_directory_exists(&session_def.beta)
+                            .await
+                        {
+                            self.status_message = Some(StatusMessage::error(format!(
+                                "Failed to create beta directory: {}",
+                                e
+                            )));
+                            return;
+                        }
+
+                        // Create the push session
+                        match self
+                            .mutagen_client
+                            .create_push_session(
+                                &push_name,
+                                &session_def.alpha,
+                                &session_def.beta,
+                                ignore.as_deref(),
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                self.status_message = Some(StatusMessage::info(format!(
+                                    "Created push session: {}",
+                                    push_name
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_message = Some(StatusMessage::error(format!(
+                                    "Failed to create push session: {}",
+                                    e
+                                )));
+                            }
+                        }
+                    } else {
+                        self.status_message = Some(StatusMessage::error(format!(
+                            "Session definition not found: {}",
+                            spec.name
+                        )));
+                    }
+                } else {
+                    self.status_message = Some(StatusMessage::error("Failed to get selected spec"));
+                }
+            } else {
+                self.status_message = Some(StatusMessage::error("Failed to get selected project"));
+            }
+        } else {
+            self.status_message = Some(StatusMessage::error("No spec selected"));
         }
     }
 

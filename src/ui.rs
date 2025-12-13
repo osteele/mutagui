@@ -227,6 +227,11 @@ fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Sp
     let running_count = project.specs.iter().filter(|s| s.is_running()).count();
     let total_count = project.specs.len();
 
+    // Count push mode specs
+    let push_count = project.specs.iter()
+        .filter(|s| s.state == crate::project::SyncSpecState::RunningPush)
+        .count();
+
     // Count conflicts across all running specs
     let conflict_count: usize = project.specs.iter()
         .filter_map(|s| s.running_session.as_ref())
@@ -257,13 +262,27 @@ fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Sp
             Style::default().fg(theme.session_status_fg),
         ));
     } else if running_count == total_count {
+        let status_text = if push_count > 0 {
+            if push_count == running_count {
+                "  Running (all push)".to_string()
+            } else {
+                format!("  Running ({} push)", push_count)
+            }
+        } else {
+            "  Running".to_string()
+        };
         spans.push(Span::styled(
-            "  Running".to_string(),
+            status_text,
             Style::default().fg(theme.session_status_fg),
         ));
     } else {
+        let status_text = if push_count > 0 {
+            format!("  {}/{} running ({} push)", running_count, total_count, push_count)
+        } else {
+            format!("  {}/{} running", running_count, total_count)
+        };
         spans.push(Span::styled(
-            format!("  {}/{} running", running_count, total_count),
+            status_text,
             Style::default().fg(theme.session_status_fg),
         ));
     }
@@ -319,8 +338,14 @@ fn render_spec_row(app: &App, spec: &crate::project::SyncSpec) -> Vec<Span<'stat
                     Style::default().fg(status_color),
                 ));
 
+                // Session name with push mode indicator
+                let name_with_mode = if spec.state == SyncSpecState::RunningPush {
+                    format!("{} (push)", spec.name)
+                } else {
+                    spec.name.clone()
+                };
                 spans.push(Span::styled(
-                    format!("{:<30}", spec.name),
+                    format!("{:<36}", name_with_mode),
                     Style::default()
                         .fg(theme.session_name_fg)
                         .add_modifier(Modifier::BOLD),
@@ -348,13 +373,17 @@ fn render_spec_row(app: &App, spec: &crate::project::SyncSpec) -> Vec<Span<'stat
                     Style::default().fg(theme.session_alpha_fg),
                 ));
 
-                // Arrow (⇄ for two-way, ⬆ for push)
-                let arrow = if spec.state == SyncSpecState::RunningPush {
-                    "⬆ "
+                // Arrow and mode indicator (⇄ for two-way, ⬆ for push)
+                if spec.state == SyncSpecState::RunningPush {
+                    spans.push(Span::styled(
+                        "⬆ ".to_string(),
+                        Style::default()
+                            .fg(theme.status_paused_fg)
+                            .add_modifier(Modifier::BOLD),
+                    ));
                 } else {
-                    "⇄ "
+                    spans.push(Span::raw("⇄ ".to_string()));
                 };
-                spans.push(Span::raw(arrow.to_string()));
 
                 // Beta endpoint
                 spans.push(Span::styled(
@@ -482,19 +511,20 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
 
     let mut help_bar = HelpBar::new(&app.color_scheme)
         .item("↑/↓/j/k", "Nav")
-        .item("h/l", "Fold")
+        .item("h/l/↵", "Fold")
         .item("r", "Refresh");
 
     if is_project_selected {
         // Project-specific commands
         help_bar = help_bar
-            .item("↵", "Edit")
+            .item("e", "Edit")
             .item("s", "Start/Stop")
             .item("p", "Push")
             .item("Space", "Pause/Resume");
     } else if is_spec_selected {
         // Spec-specific commands
         help_bar = help_bar
+            .item("p", "Push")
             .item("Space", "Pause/Resume")
             .item("f", "Flush")
             .item("t", "Terminate")
@@ -502,7 +532,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Common commands
-    help_bar = help_bar.item("r", "Refresh").item("q", "Quit");
+    help_bar = help_bar.item("q", "Quit");
 
     let help = Paragraph::new(help_bar.build())
         .block(Block::default().borders(Borders::ALL).title("Help"));

@@ -71,9 +71,6 @@ pub enum SyncSpecState {
 pub struct SyncSpec {
     /// Name of the sync spec (from project file key)
     pub name: String,
-    /// The definition from the project file
-    #[allow(dead_code)]
-    pub definition: SessionDefinition,
     /// Current materialization state
     pub state: SyncSpecState,
     /// Link to running session if materialized
@@ -239,62 +236,6 @@ impl Project {
     /// Check if project has any running sessions
     pub fn is_active(&self) -> bool {
         self.specs.iter().any(|s| s.is_running())
-    }
-
-    pub fn status_icon(&self) -> &str {
-        if self.is_active() {
-            "✓"
-        } else {
-            "○"
-        }
-    }
-
-    /// Check if project should auto-unfold
-    #[allow(dead_code)]
-    pub fn should_auto_unfold(&self) -> bool {
-        // Auto-unfold if any spec has conflicts
-        if self.specs.iter().any(|s| s.has_conflicts()) {
-            return true;
-        }
-
-        // Auto-unfold if specs are in different states (some running, some not)
-        let running_count = self.specs.iter().filter(|s| s.is_running()).count();
-        if running_count > 0 && running_count < self.specs.len() {
-            return true;
-        }
-
-        // Auto-unfold if running specs have different modes
-        let two_way_count = self
-            .specs
-            .iter()
-            .filter(|s| s.state == SyncSpecState::RunningTwoWay)
-            .count();
-        let push_count = self
-            .specs
-            .iter()
-            .filter(|s| s.state == SyncSpecState::RunningPush)
-            .count();
-        if two_way_count > 0 && push_count > 0 {
-            return true;
-        }
-
-        false
-    }
-
-    /// Get specs that have different pause states
-    #[allow(dead_code)]
-    pub fn has_mixed_pause_states(&self) -> bool {
-        let paused_count = self
-            .specs
-            .iter()
-            .filter(|s| s.is_running() && s.is_paused())
-            .count();
-        let running_count = self
-            .specs
-            .iter()
-            .filter(|s| s.is_running() && !s.is_paused())
-            .count();
-        paused_count > 0 && running_count > 0
     }
 }
 
@@ -482,7 +423,7 @@ pub fn build_sync_specs(
 ) -> Vec<SyncSpec> {
     let mut specs = Vec::new();
 
-    for (name, definition) in &project_file.sessions {
+    for (name, _definition) in &project_file.sessions {
         // Find matching running session(s)
         let two_way_session = sessions.iter().find(|s| {
             s.name == *name && s.mode.as_deref() != Some("one-way-replica")
@@ -504,7 +445,6 @@ pub fn build_sync_specs(
 
         specs.push(SyncSpec {
             name: name.clone(),
-            definition: definition.clone(),
             state,
             running_session,
         });
@@ -563,109 +503,11 @@ pub fn correlate_projects_with_sessions(
         .collect()
 }
 
-/// Normalizes a path for comparison by resolving it to an absolute canonical path.
-/// Handles relative paths, strips trailing slashes, and resolves symlinks.
-/// Returns the original path string if canonicalization fails (e.g., for remote paths).
-#[cfg_attr(test, allow(dead_code))]
-#[allow(dead_code)]
-pub(crate) fn normalize_path(path: &str) -> String {
-    use crate::endpoint::EndpointAddress;
-
-    let parsed = EndpointAddress::parse(path);
-
-    match parsed {
-        EndpointAddress::Local(local_path) => {
-            // Expand tilde for local paths before canonicalization
-            let expanded = EndpointAddress::Local(local_path).expand_tilde();
-            let path_to_normalize = expanded.path();
-
-            // Try to canonicalize the path
-            match std::fs::canonicalize(path_to_normalize) {
-                Ok(canonical) => canonical
-                    .to_string_lossy()
-                    .trim_end_matches('/')
-                    .trim_end_matches('\\')
-                    .to_string(),
-                Err(_) => {
-                    // If canonicalization fails (path doesn't exist), try to resolve relative paths
-                    if path_to_normalize.is_relative() {
-                        std::env::current_dir()
-                            .ok()
-                            .and_then(|cwd| cwd.join(path_to_normalize).canonicalize().ok())
-                            .map(|p| {
-                                p.to_string_lossy()
-                                    .trim_end_matches('/')
-                                    .trim_end_matches('\\')
-                                    .to_string()
-                            })
-                            .unwrap_or_else(|| {
-                                path_to_normalize
-                                    .to_string_lossy()
-                                    .trim_end_matches('/')
-                                    .to_string()
-                            })
-                    } else {
-                        // Already absolute, just normalize
-                        path_to_normalize
-                            .to_string_lossy()
-                            .trim_end_matches('/')
-                            .to_string()
-                    }
-                }
-            }
-        }
-        // Remote paths (SSH, Docker) cannot be canonicalized locally
-        EndpointAddress::Ssh { .. } | EndpointAddress::Docker { .. } => path
-            .trim_end_matches('/')
-            .trim_end_matches('\\')
-            .to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
-
-    // ============ normalize_path tests ============
-
-    #[test]
-    fn test_normalize_path_remote_path() {
-        // Remote paths should not be canonicalized, just trimmed
-        assert_eq!(
-            normalize_path("server:/remote/path/"),
-            "server:/remote/path"
-        );
-        assert_eq!(
-            normalize_path("user@host:/home/user/"),
-            "user@host:/home/user"
-        );
-    }
-
-    #[test]
-    fn test_normalize_path_windows_drive_letter() {
-        // Windows paths should be recognized and not treated as remote
-        // They will fail canonicalization on non-Windows, but shouldn't be split at ':'
-        let result = normalize_path("C:\\Users\\test\\");
-        // On non-Windows, this will fail to canonicalize and return trimmed version
-        // The key is that it should NOT be treated as "C" host with "\\Users\\test\\" path
-        // It should contain the original path structure
-        assert!(
-            result.contains("Users") || result.contains("C:"),
-            "Should preserve Windows path structure, got: {}",
-            result
-        );
-        // Note: On non-Windows, the path normalization uses forward-slash trimming
-        // but backslash remains, which is acceptable behavior
-    }
-
-    #[test]
-    fn test_normalize_path_trailing_slashes() {
-        // Remote paths should have trailing slashes stripped
-        assert_eq!(normalize_path("host:/path///"), "host:/path");
-        assert_eq!(normalize_path("host:/path/"), "host:/path");
-    }
 
     // ============ extract_target_name tests ============
 
@@ -1174,12 +1016,6 @@ sync:
         let session = make_test_session("test", "/local", "/remote");
         let spec = SyncSpec {
             name: "test".to_string(),
-            definition: SessionDefinition {
-                alpha: "/local".to_string(),
-                beta: "server:/remote".to_string(),
-                mode: None,
-                ignore: None,
-            },
             state: SyncSpecState::RunningTwoWay,
             running_session: Some(session),
         };
@@ -1201,12 +1037,6 @@ sync:
     fn test_project_is_inactive() {
         let spec = SyncSpec {
             name: "test".to_string(),
-            definition: SessionDefinition {
-                alpha: "/local".to_string(),
-                beta: "server:/remote".to_string(),
-                mode: None,
-                ignore: None,
-            },
             state: SyncSpecState::NotRunning,
             running_session: None,
         };
@@ -1224,54 +1054,4 @@ sync:
         assert!(!project.is_active());
     }
 
-    #[test]
-    fn test_project_status_icon() {
-        let running_spec = SyncSpec {
-            name: "test".to_string(),
-            definition: SessionDefinition {
-                alpha: "/local".to_string(),
-                beta: "server:/remote".to_string(),
-                mode: None,
-                ignore: None,
-            },
-            state: SyncSpecState::RunningTwoWay,
-            running_session: Some(make_test_session("test", "/local", "/remote")),
-        };
-
-        let active_project = Project {
-            file: ProjectFile {
-                path: PathBuf::from("/test/mutagen.yml"),
-                target_name: None,
-                sessions: HashMap::new(),
-                defaults: None,
-            },
-            specs: vec![running_spec],
-            folded: false,
-        };
-        assert_eq!(active_project.status_icon(), "✓");
-
-        let not_running_spec = SyncSpec {
-            name: "test".to_string(),
-            definition: SessionDefinition {
-                alpha: "/local".to_string(),
-                beta: "server:/remote".to_string(),
-                mode: None,
-                ignore: None,
-            },
-            state: SyncSpecState::NotRunning,
-            running_session: None,
-        };
-
-        let inactive_project = Project {
-            file: ProjectFile {
-                path: PathBuf::from("/test/mutagen.yml"),
-                target_name: None,
-                sessions: HashMap::new(),
-                defaults: None,
-            },
-            specs: vec![not_running_spec],
-            folded: false,
-        };
-        assert_eq!(inactive_project.status_icon(), "○");
-    }
 }

@@ -6,22 +6,31 @@ For more development tools, see: https://osteele.com/software/development-tools
 
 ## Features
 
-- View all active Mutagen sync sessions in a clean, organized interface
+- **Unified hierarchical view**: Projects and their sync specs in a single tree view
+  - Fold/unfold projects to show or hide individual sync specs
+  - Auto-unfold when conflicts are detected
 - **Project discovery**: Automatically finds and displays `mutagen.yml` files
   - Searches common project directories (`~/code`, `~/projects`, `~/src`, etc.)
   - Supports multiple config files per directory (`mutagen-<target>.yml` pattern)
   - Correlates project files with running sessions
-  - Toggle between Sessions and Projects views with Tab
+- **Push mode support**: Create one-way sync sessions (alpha → beta)
+  - Push individual specs or entire projects
+  - Automatically replaces two-way sessions when creating push
+  - Clear visual indicators for push mode (⬆ arrow, "(push)" label)
 - **Automatic theme detection**: Adapts colors for light and dark terminal backgrounds
 - **Auto-refresh**: Session list and projects update every 3 seconds automatically
 - **Real-time activity indicators**:
   - Connection status icons (✓ connected, ⊗ disconnected, ⟳ scanning)
+  - Session status icons (👁 watching, 📦 staging, ⚖ reconciling, etc.)
   - File and directory counts for each endpoint
-  - Sync status display
-- Interactive keyboard controls for managing syncs:
+  - Sync status display with progress percentages
+- **Interactive keyboard controls** for managing syncs:
+  - Start/stop projects and individual specs
+  - Create push sessions
   - Pause/resume sessions
-  - Terminate sessions
-  - Flush sessions
+  - Terminate and flush sessions
+  - View and resolve conflicts
+  - Edit project configuration files
   - Manual refresh
 - Last refresh timestamp display
 
@@ -94,28 +103,75 @@ The `--project-dir` option specifies where to start searching for `mutagen.yml` 
 - Walk up the directory tree to find project configuration directories
 - Still check user config directories (`~/.config/mutagen/projects/`, `~/.mutagen/projects/`)
 
+## Interface Overview
+
+The TUI displays a hierarchical tree view of projects and their sync specs:
+
+```
+┌─ Sync Projects ─────────────────────────────────────────────────────────────┐
+│ ▼ ✓ apollo-research               2/3 running (1 push)                      │
+│   ▶ apollo-research (push)           👁  ✓~/code/research ⬆ ✓apollo:/data/. │
+│   ▶ apollo-research-tools             👁  ✓~/code/tools ⇄ ✓apollo:/data/... │
+│   ○ apollo-datasets                   Not running                            │
+│ ▶ ○ mercury-ml                     0/2 running                               │
+│ ▼ ✓ starship-dev                  1/1 running  ⚠ 3 conflicts               │
+│   ▶ sync-to-orbit                     📦  ✓~/code/starship ⇄ ✓orbit:/home/. │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─ Help ───────────────────────────────────────────────────────────────────────┐
+│ ↑/↓/j/k Nav │ h/l/↵ Fold │ r Refresh │ e Edit │ s Start/Stop │ p Push │...  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─ Status ─────────────────────────────────────────────────────────────────────┐
+│ Created 1 push session(s) | Last refresh: 12:34:56                           │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Visual Indicators:**
+- **Fold state**: `▼` (expanded) / `▶` (collapsed)
+- **Project status**: `✓` (active) / `○` (inactive)
+- **Spec status**: `▶` (running) / `⏸` (paused) / `○` (not running)
+- **Direction**: `⇄` (two-way) / `⬆` (push mode, bold/colored)
+- **Push mode label**: Specs show `(push)` suffix when in push mode
+- **Endpoint status**: `✓` (connected) / `⟳` (scanning) / `⊗` (disconnected)
+- **Session activity**: `👁` (watching) / `📦` (staging) / `⚖` (reconciling) / etc.
+- **Conflicts**: `⚠ 3 conflicts` shown on project header
+
 ### Keyboard Controls
 
+#### Navigation
 | Key | Action |
 |-----|--------|
-| `Tab` | Switch between Projects and Sessions areas |
 | `↑` / `k` | Move selection up |
 | `↓` / `j` | Move selection down |
-| `m` | Toggle display mode (show paths vs. last sync time) |
+| `h` / `←` / `l` / `→` / `Enter` | Toggle fold/unfold project |
+
+#### Global Actions
+| Key | Action |
+|-----|--------|
 | `r` | Refresh session list and projects |
-| `Enter` / `↵` | Edit selected project configuration file (Projects only) |
-| `s` | Start/stop selected project (Projects only) |
-| `p` | Pause selected session (Sessions) / Create push session (Projects) |
-| `u` | Resume selected session |
-| `Space` | Toggle pause/resume on selected item |
-| `f` | Flush selected session |
-| `t` | Terminate selected session |
-| `c` | View conflicts for selected session |
+| `m` | Toggle display mode (show paths vs. last sync time) |
 | `q` / `Ctrl-C` | Quit application |
+
+#### Project Actions (when project selected)
+| Key | Action |
+|-----|--------|
+| `e` | Edit project configuration file |
+| `s` | Start/stop all specs in project |
+| `p` | Create push sessions for all specs |
+| `Space` | Pause/resume all running specs |
+
+#### Spec Actions (when individual spec selected)
+| Key | Action |
+|-----|--------|
+| `p` | Create push session (replaces two-way if running) |
+| `Space` | Pause/resume spec |
+| `u` | Resume paused spec |
+| `f` | Flush spec |
+| `t` | Terminate spec |
+| `c` | View conflicts |
 
 ### Editor Integration
 
-When pressing `Enter` to edit a project file:
+When pressing `e` to edit a project file:
 
 **Editor Selection:**
 1. `$VISUAL` environment variable (if set)
@@ -185,7 +241,7 @@ Starting from the base directory (current directory by default, or specified wit
 ### Supported File Naming Patterns
 
 - `mutagen.yml` - Standard project configuration file
-- `mutagen-<target>.yml` - Target-specific configurations (e.g., `mutagen-studio.yml`, `mutagen-cool30.yml`)
+- `mutagen-<target>.yml` - Target-specific configurations (e.g., `mutagen-apollo.yml`, `mutagen-mercury.yml`)
 - `.mutagen.yml` and `.mutagen-<target>.yml` - Hidden variants of the above
 
 This naming scheme allows you to maintain multiple Mutagen configurations in the same directory for different sync targets.
@@ -196,22 +252,25 @@ The file discovery uses non-recursive glob patterns for fast startup. Deep direc
 
 ## Display
 
-The TUI has two view modes (toggle with Tab):
+The TUI shows a unified hierarchical view with:
 
-### Sessions View
+### Unified Projects and Specs View
 
-Shows all running sync sessions:
-- **Status icon**: ▶ (running) or ⏸ (paused)
-- **Session name**: Identifier for the sync
-- **Alpha endpoint**:
-  - Connection status icon (✓/⊗/⟳)
-  - Path (local or host:path for remote)
-  - File/directory counts when available
-- **Beta endpoint**:
-  - Connection status icon
-  - Path
-  - File/directory counts when available
-- **Sync status**: Current state (watching, syncing, halted, etc.)
+Shows all projects and their sync specs in a tree structure:
+- **Project headers**:
+  - Fold indicator: ▼ (expanded) or ▶ (collapsed)
+  - Status icon: ✓ (active) or ○ (inactive)
+  - Project name (e.g., `mutagen-apollo`, `starship-dev`)
+  - Running status: "Running", "Not running", or "X/Y running"
+  - Push mode count when applicable: "(2 push)"
+  - Conflict indicator when present: "⚠ 3 conflicts"
+- **Sync specs** (shown when project is expanded):
+  - Status icon: ▶ (running), ⏸ (paused), or ○ (not running)
+  - Spec name with push mode label: `sync-name (push)`
+  - Session status icon: 👁 (watching), 📦 (staging), ⚖ (reconciling), etc.
+  - Alpha endpoint with connection status and path
+  - Direction arrow: ⇄ (two-way) or ⬆ (push mode, in bold color)
+  - Beta endpoint with connection status and path
 
 #### Session Status Icons
 
@@ -247,15 +306,6 @@ The Status area shows progress percentage during staging (e.g., "Staging (45%)")
 | ⟳ | Connected, scanning |
 | ⊗ | Disconnected |
 
-### Projects View
-
-Shows discovered `mutagen.yml` project files:
-- **Status icon**: ✓ (has running sessions) or ○ (inactive)
-- **File name**: e.g., `mutagen-studio.yml`, `mutagen.yml`
-- **File path**: Location of the project file
-- **Associated sessions**: Lists running sessions linked to this project
-- Helps manage multi-target setups (e.g., different files for different remote hosts)
-
 ### Status Bar
 
 - Current status message
@@ -263,19 +313,26 @@ Shows discovered `mutagen.yml` project files:
 
 ## Push Sessions
 
-The push feature allows you to create one-time, one-way sync sessions from a project definition. This is useful for quickly pushing local changes to a remote without starting a full bidirectional sync.
+The push feature allows you to create one-way sync sessions (alpha → beta) from a project definition. This is useful for quickly pushing local changes to a remote without starting a full bidirectional sync.
 
-**To create a push session:**
-1. Switch to Projects view (press `Tab`)
-2. Select a project
-3. Press `p` to create a push session
+**To create push sessions:**
 
-The application will create a temporary session named `<session-name>-push` with:
+**For a single spec:**
+1. Select an individual sync spec (navigate to it with arrow keys)
+2. Press `p` to create a push session
+   - If a two-way session is running, it will be automatically terminated and replaced
+   - A new session named `<spec-name>-push` will be created
+
+**For all specs in a project:**
+1. Select a project header
+2. Press `p` to create push sessions for all specs
+   - All running two-way sessions will be terminated
+   - Push sessions will be created for each spec defined in the project file
+
+The application creates sessions with:
 - Mode: `one-way-replica` (alpha → beta)
 - Endpoints from the project file
-- Ignore patterns (with limitations - see below)
-
-**Important:** You can only create a push session when the project has no active sessions running. Stop the project first if needed (press `s`).
+- Ignore patterns from the project configuration
 
 ### Push Session Limitations
 
@@ -347,11 +404,6 @@ The application will create a temporary session named `<session-name>-push` with
 - Regular expression patterns (`ignore: { regex: "pattern.*" }`)
 
 **Note:** Ignore patterns from `sync.defaults` are merged with session-specific patterns. Session-specific patterns are added to (not replacing) defaults.
-
-**Session Selection:** When a project file contains multiple session definitions:
-- If exactly one session is defined → uses that session
-- If multiple sessions are defined and one or more are active → uses the first active session (alphabetically)
-- If multiple sessions are defined and none are active → uses the first session alphabetically
 
 ## Contributing
 

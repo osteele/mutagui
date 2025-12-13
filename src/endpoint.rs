@@ -185,28 +185,12 @@ impl EndpointAddress {
         }
     }
 
-    /// Returns true if this is a remote endpoint (SSH or Docker).
-    #[allow(dead_code)] // Part of public API, used in tests
-    pub fn is_remote(&self) -> bool {
-        !matches!(self, EndpointAddress::Local(_))
-    }
-
     /// Returns the path component of the endpoint.
     pub fn path(&self) -> &Path {
         match self {
             EndpointAddress::Local(p) => p,
             EndpointAddress::Ssh { path, .. } => path,
             EndpointAddress::Docker { path, .. } => path,
-        }
-    }
-
-    /// Returns the host for remote endpoints, None for local.
-    #[allow(dead_code)] // Part of public API, used in tests
-    pub fn host(&self) -> Option<&str> {
-        match self {
-            EndpointAddress::Local(_) => None,
-            EndpointAddress::Ssh { host, .. } => Some(host),
-            EndpointAddress::Docker { container, .. } => Some(container),
         }
     }
 }
@@ -223,7 +207,6 @@ mod tests {
             ep,
             EndpointAddress::Local(PathBuf::from("/home/user/project"))
         );
-        assert!(!ep.is_remote());
     }
 
     #[test]
@@ -248,7 +231,6 @@ mod tests {
             ep,
             EndpointAddress::Local(PathBuf::from("C:\\Users\\test\\project"))
         );
-        assert!(!ep.is_remote());
     }
 
     #[test]
@@ -270,7 +252,6 @@ mod tests {
                 path: PathBuf::from("/path/to/dir"),
             }
         );
-        assert!(ep.is_remote());
     }
 
     #[test]
@@ -398,7 +379,6 @@ mod tests {
                 path: PathBuf::from("/app/data"),
             }
         );
-        assert!(ep.is_remote());
     }
 
     #[test]
@@ -473,15 +453,4 @@ mod tests {
         assert_eq!(docker.path(), Path::new("/app"));
     }
 
-    #[test]
-    fn test_host_accessor() {
-        let local = EndpointAddress::parse("/home/user");
-        assert_eq!(local.host(), None);
-
-        let ssh = EndpointAddress::parse("myhost:/path");
-        assert_eq!(ssh.host(), Some("myhost"));
-
-        let docker = EndpointAddress::parse("docker://mycontainer/path");
-        assert_eq!(docker.host(), Some("mycontainer"));
-    }
 }

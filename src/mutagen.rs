@@ -1,7 +1,6 @@
 use crate::command::{CommandRunner, SystemCommandRunner};
 use crate::project::ProjectFile;
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use shell_escape::escape;
 use std::borrow::Cow;
@@ -39,12 +38,11 @@ fn project_has_running_sessions(project_file: &Path, sessions: &[SyncSession]) -
 }
 
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub enum SyncTime {
-    Never, // Brand new session, no syncs yet
+    Never,   // Brand new session, no syncs yet
     #[default]
     Unknown, // Pre-existing session, sync history unknown
-    At(DateTime<Local>), // Observed sync at this time
+    At,      // Observed sync (timestamp not tracked)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,10 +248,6 @@ impl SyncSession {
 
 }
 
-/// Type alias for the production MutagenClient.
-#[allow(dead_code)] // Available for future use and testing
-pub type ProductionMutagenClient = MutagenClient<SystemCommandRunner>;
-
 /// Client for interacting with the Mutagen CLI.
 ///
 /// Generic over `CommandRunner` to allow dependency injection of mock
@@ -427,38 +421,6 @@ impl<R: CommandRunner> MutagenClient<R> {
         Ok(())
     }
 
-    #[allow(dead_code)] // May be used in future for project-level pause operations
-    pub async fn pause_project(&self, project_file: &Path) -> Result<()> {
-        let path_str = project_file.to_string_lossy();
-        let output = self
-            .runner
-            .run("mutagen", &["project", "pause", "-f", &path_str], 10)
-            .await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("mutagen project pause failed: {}", stderr);
-        }
-
-        Ok(())
-    }
-
-    #[allow(dead_code)] // May be used in future for project-level resume operations
-    pub async fn resume_project(&self, project_file: &Path) -> Result<()> {
-        let path_str = project_file.to_string_lossy();
-        let output = self
-            .runner
-            .run("mutagen", &["project", "resume", "-f", &path_str], 10)
-            .await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("mutagen project resume failed: {}", stderr);
-        }
-
-        Ok(())
-    }
-
     /// Ensures a directory exists on an endpoint (local or remote).
     /// For remote endpoints (SSH, Docker), uses SSH to create the directory.
     /// For local paths, uses std::fs::create_dir_all with tilde expansion.
@@ -477,7 +439,7 @@ impl<R: CommandRunner> MutagenClient<R> {
                     .with_context(|| format!("Failed to create local directory {:?}", final_path))
             }
             EndpointAddress::Ssh {
-                user, host, path, ..
+                user, host, port, path
             } => {
                 // Build the SSH host string (user@host or just host)
                 let ssh_host = match user {
@@ -489,7 +451,18 @@ impl<R: CommandRunner> MutagenClient<R> {
                 let path_str = path.to_string_lossy();
                 let escaped_path = escape(Cow::Borrowed(&*path_str));
                 let mkdir_cmd = format!("mkdir -p {}", escaped_path);
-                let output = self.runner.run("ssh", &[&ssh_host, &mkdir_cmd], 10).await?;
+
+                // Build SSH args with optional port
+                let mut ssh_args = Vec::new();
+                if let Some(p) = port {
+                    ssh_args.push("-p".to_string());
+                    ssh_args.push(p.to_string());
+                }
+                ssh_args.push(ssh_host);
+                ssh_args.push(mkdir_cmd);
+
+                let ssh_args_refs: Vec<&str> = ssh_args.iter().map(|s| s.as_str()).collect();
+                let output = self.runner.run("ssh", &ssh_args_refs, 10).await?;
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);

@@ -140,37 +140,6 @@ impl SelectionManager {
         }
     }
 
-    /// Select a specific project by index
-    #[allow(dead_code)]
-    pub fn select_project(&mut self, project_idx: usize) {
-        // Find the first item that matches this project (the header)
-        for (idx, item) in self.items.iter().enumerate() {
-            if let SelectableItem::Project { index } = item {
-                if *index == project_idx {
-                    self.selected_index = idx;
-                    return;
-                }
-            }
-        }
-    }
-
-    /// Select a specific spec by project and spec indices
-    #[allow(dead_code)]
-    pub fn select_spec(&mut self, project_idx: usize, spec_idx: usize) {
-        for (idx, item) in self.items.iter().enumerate() {
-            if let SelectableItem::Spec {
-                project_index,
-                spec_index,
-            } = item
-            {
-                if *project_index == project_idx && *spec_index == spec_idx {
-                    self.selected_index = idx;
-                    return;
-                }
-            }
-        }
-    }
-
     /// Set selection directly by raw index.
     #[cfg(test)]
     pub fn set_index(&mut self, index: usize) {
@@ -205,12 +174,6 @@ mod tests {
             );
             specs.push(SyncSpec {
                 name: spec_name,
-                definition: SessionDefinition {
-                    alpha: "/local".to_string(),
-                    beta: "server:/remote".to_string(),
-                    mode: None,
-                    ignore: None,
-                },
                 state: SyncSpecState::NotRunning,
                 running_session: None,
             });
@@ -388,37 +351,6 @@ mod tests {
         sel.rebuild_from_projects(&projects);
 
         assert_eq!(sel.raw_index(), 2); // Clamped to max
-    }
-
-    #[test]
-    fn test_select_project_by_index() {
-        let mut sel = SelectionManager::new();
-        let projects = vec![
-            make_test_project("p1", 2, false),
-            make_test_project("p2", 1, false),
-        ];
-
-        sel.rebuild_from_projects(&projects);
-        sel.set_index(2); // Start at spec
-
-        sel.select_project(1);
-
-        assert_eq!(sel.selected_project_index(), Some(1));
-        assert!(sel.is_project_selected());
-    }
-
-    #[test]
-    fn test_select_spec_by_index() {
-        let mut sel = SelectionManager::new();
-        let projects = vec![make_test_project("p1", 3, false)];
-
-        sel.rebuild_from_projects(&projects);
-        sel.set_index(0); // Start at project header
-
-        sel.select_spec(0, 2);
-
-        assert_eq!(sel.selected_spec(), Some((0, 2)));
-        assert!(sel.is_spec_selected());
     }
 
     #[test]

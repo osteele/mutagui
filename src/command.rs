@@ -46,6 +46,7 @@ impl CommandRunner for SystemCommandRunner {
             .args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true) // Ensure process is killed if dropped on timeout
             .spawn()
             .map_err(|e| anyhow!("Failed to spawn command '{}': {}", program, e))?;
 
@@ -55,9 +56,7 @@ impl CommandRunner for SystemCommandRunner {
             Ok(Ok(output)) => Ok(output),
             Ok(Err(e)) => Err(anyhow!("Command '{}' failed: {}", program, e)),
             Err(_) => {
-                // Timeout occurred - kill the child process
-                // Note: child.kill() requires &mut self, but we've moved child into wait_with_output
-                // The timeout cancellation will drop the future which should clean up the child
+                // Timeout occurred - child process will be killed automatically via kill_on_drop
                 anyhow::bail!(
                     "Command '{}' timed out after {} seconds",
                     program,
@@ -122,7 +121,6 @@ impl MockCommandRunner {
     }
 
     /// Check if a specific command was executed.
-    #[allow(dead_code)]
     pub fn was_executed(&self, command: &str) -> bool {
         self.executed.lock().unwrap().iter().any(|c| c == command)
     }
