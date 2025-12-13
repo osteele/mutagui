@@ -27,6 +27,7 @@ pub struct StyledText<'a> {
     spans: Vec<Span<'a>>,
 }
 
+#[allow(dead_code)]
 impl<'a> StyledText<'a> {
     /// Create a new StyledText builder with the given color scheme.
     pub fn new(theme: &'a ColorScheme) -> Self {

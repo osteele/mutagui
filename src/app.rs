@@ -1,30 +1,11 @@
 use crate::config::{Config, DisplayMode, ThemeMode};
-use crate::mutagen::{MutagenClient, SyncSession};
+use crate::mutagen::MutagenClient;
 use crate::project::{correlate_projects_with_sessions, discover_project_files, Project};
 use crate::selection::SelectionManager;
 use crate::theme::{detect_theme, ColorScheme};
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
-
-// Re-export FocusArea for external use (e.g., in ui.rs)
-pub use crate::selection::FocusArea;
-
-/// Represents a selectable item in the sessions panel.
-/// This includes both project headers (for grouped sessions) and individual sessions.
-#[derive(Debug, Clone)]
-pub enum SessionPanelItem {
-    /// A project header row (for grouping sessions under a project)
-    ProjectHeader {
-        /// Index into app.projects
-        project_index: usize,
-    },
-    /// An individual session row
-    Session {
-        /// Index into app.sessions
-        session_index: usize,
-    },
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionDisplayMode {
@@ -64,92 +45,14 @@ impl StatusMessage {
     }
 }
 
-/// Get the display name for a session to use for sorting.
-/// If the session belongs to a project, returns "project-name > session-name".
-/// Otherwise, returns just the session name.
-fn get_session_sort_key(session: &SyncSession, projects: &[Project]) -> String {
-    for project in projects {
-        if project
-            .active_sessions
-            .iter()
-            .any(|s| s.name == session.name)
-        {
-            let project_name = project.file.display_name();
-            return format!("{} > {}", project_name, session.name);
-        }
-    }
-    session.name.clone()
-}
-
-/// Find which project a session belongs to (by index), if any.
-fn find_session_project_index(session: &SyncSession, projects: &[Project]) -> Option<usize> {
-    projects
-        .iter()
-        .position(|p| p.active_sessions.iter().any(|s| s.name == session.name))
-}
-
-/// Build the list of selectable items for the sessions panel.
-/// Groups sessions by project and creates a flat list with project headers followed by their sessions.
-fn build_session_panel_items(
-    sessions: &[SyncSession],
-    projects: &[Project],
-) -> Vec<SessionPanelItem> {
-    use std::collections::{HashMap, HashSet};
-
-    // First, group sessions by project
-    let mut project_sessions: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
-    for (session_idx, session) in sessions.iter().enumerate() {
-        let project_idx = find_session_project_index(session, projects);
-        project_sessions
-            .entry(project_idx)
-            .or_default()
-            .push(session_idx);
-    }
-
-    // Build the display list in order sessions appear
-    let mut result = Vec::new();
-    let mut processed_projects: HashSet<Option<usize>> = HashSet::new();
-
-    for session in sessions {
-        let project_idx = find_session_project_index(session, projects);
-
-        if processed_projects.contains(&project_idx) {
-            continue;
-        }
-        processed_projects.insert(project_idx);
-
-        let session_indices = project_sessions.remove(&project_idx).unwrap_or_default();
-
-        if let Some(proj_idx) = project_idx {
-            // Project with sessions: add header first, then sessions
-            result.push(SessionPanelItem::ProjectHeader {
-                project_index: proj_idx,
-            });
-            for idx in session_indices {
-                result.push(SessionPanelItem::Session { session_index: idx });
-            }
-        } else {
-            // Standalone sessions (no project): add directly
-            for idx in session_indices {
-                result.push(SessionPanelItem::Session { session_index: idx });
-            }
-        }
-    }
-
-    result
-}
-
 #[derive(Debug, Clone)]
 pub struct BlockingOperation {
     pub message: String,
 }
 
 pub struct App {
-    pub sessions: Vec<SyncSession>,
     pub projects: Vec<Project>,
-    /// Ordered list of selectable items in the sessions panel (project headers + sessions)
-    pub session_panel_items: Vec<SessionPanelItem>,
-    selection: SelectionManager,
+    pub selection: SelectionManager,
     pub should_quit: bool,
     pub status_message: Option<StatusMessage>,
     pub mutagen_client: MutagenClient,
@@ -182,9 +85,7 @@ impl App {
         };
 
         Self {
-            sessions: Vec::new(),
             projects: Vec::new(),
-            session_panel_items: Vec::new(),
             selection: SelectionManager::new(),
             should_quit: false,
             status_message: None,
@@ -202,10 +103,6 @@ impl App {
 
     // ============ Selection accessors (delegate to SelectionManager) ============
 
-    /// Get the raw selected index for UI rendering.
-    pub fn selected_index(&self) -> usize {
-        self.selection.raw_index()
-    }
 
     pub async fn refresh_sessions(&mut self) -> Result<()> {
         match self.mutagen_client.list_sessions().await {
@@ -213,16 +110,24 @@ impl App {
                 let now = Local::now();
 
                 // Track when successfulCycles changes to detect actual sync activity
-                let is_first_refresh = self.sessions.is_empty();
+                // We need to preserve sync_time from previous refresh
+                let is_first_refresh = self.projects.is_empty();
+
+                // Build map of old sessions by identifier for sync_time tracking
+                let mut old_sessions_by_id = std::collections::HashMap::new();
+                for project in &self.projects {
+                    for spec in &project.specs {
+                        if let Some(session) = &spec.running_session {
+                            old_sessions_by_id.insert(session.identifier.clone(), session.clone());
+                        }
+                    }
+                }
+
                 let new_sessions: Vec<_> = sessions
                     .into_iter()
                     .map(|mut new_session| {
                         // Find the previous version of this session
-                        if let Some(old_session) = self
-                            .sessions
-                            .iter()
-                            .find(|s| s.identifier == new_session.identifier)
-                        {
+                        if let Some(old_session) = old_sessions_by_id.get(&new_session.identifier) {
                             // If successfulCycles increased, we observed a sync
                             let new_cycles = new_session.successful_cycles.unwrap_or(0);
                             let old_cycles = old_session.successful_cycles.unwrap_or(0);
@@ -251,26 +156,17 @@ impl App {
                     })
                     .collect();
 
-                // Sort sessions alphabetically by name
-                let mut sorted_sessions = new_sessions;
-                sorted_sessions.sort_by(|a, b| a.name.cmp(&b.name));
-
-                self.sessions = sorted_sessions;
-
                 match discover_project_files(
                     self.project_dir.as_deref(),
                     Some(&self.config.projects),
                 ) {
                     Ok(project_files) => {
                         self.projects =
-                            correlate_projects_with_sessions(project_files, &self.sessions);
+                            correlate_projects_with_sessions(project_files, &new_sessions);
 
-                        // Re-sort sessions by display name (including project prefix) now that we have project correlation
-                        self.sessions.sort_by(|a, b| {
-                            let a_key = get_session_sort_key(a, &self.projects);
-                            let b_key = get_session_sort_key(b, &self.projects);
-                            a_key.cmp(&b_key)
-                        });
+                        // Sort projects alphabetically by display name
+                        self.projects
+                            .sort_by(|a, b| a.file.display_name().cmp(&b.file.display_name()));
                     }
                     Err(e) => {
                         // Note: Error is silently ignored here as project discovery is optional
@@ -279,23 +175,19 @@ impl App {
                     }
                 }
 
-                // Build session panel items (project headers + sessions in display order)
-                self.session_panel_items =
-                    build_session_panel_items(&self.sessions, &self.projects);
-
-                // Update selection manager with new list sizes (handles clamping and focus)
-                // Use session_panel_items.len() which includes both project headers and sessions
-                self.selection
-                    .update_sizes(self.projects.len(), self.session_panel_items.len());
+                // Rebuild selection manager from projects
+                self.selection.rebuild_from_projects(&self.projects);
 
                 self.last_refresh = Some(Local::now());
-                // Only show "Sessions refreshed" if there's no status message, or if showing the temporary "Creating push session..." message
-                // Preserve all other messages (errors, warnings, and operation success messages like "Created push session: xyz")
+                // Only show "Sessions refreshed" if there's no status message, or if showing temporary messages
                 let should_show_refreshed = self.status_message.is_none()
                     || self
                         .status_message
                         .as_ref()
-                        .map(|msg| msg.text() == "Creating push session...")
+                        .map(|msg| {
+                            msg.text() == "Creating push session..."
+                                || msg.text() == "Starting sync spec..."
+                        })
                         .unwrap_or(false);
 
                 if should_show_refreshed {
@@ -327,109 +219,51 @@ impl App {
         self.selection.select_previous();
     }
 
-    pub fn toggle_focus_area(&mut self) {
-        // Save current context for related item lookup
-        let last_session_idx = self.selection.selected_session();
-        let last_project_idx = self.selection.selected_project();
-
-        self.selection.toggle_focus();
-
-        // Try to find related items after basic toggle
-        match self.selection.focus_area() {
-            FocusArea::Projects => {
-                // If we just came from a session, try to find its parent project
-                if let Some(session_idx) = last_session_idx {
-                    if let Some(session) = self.sessions.get(session_idx) {
-                        for (proj_idx, project) in self.projects.iter().enumerate() {
-                            if project
-                                .active_sessions
-                                .iter()
-                                .any(|s| s.name == session.name)
-                            {
-                                self.selection.select_project(proj_idx);
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-            FocusArea::Sessions => {
-                // If we just came from a project, try to find its first session
-                if let Some(proj_idx) = last_project_idx {
-                    if let Some(project) = self.projects.get(proj_idx) {
-                        if let Some(active_session) = project.active_sessions.first() {
-                            for (sess_idx, session) in self.sessions.iter().enumerate() {
-                                if session.name == active_session.name {
-                                    self.selection.select_session(sess_idx);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    /// Toggle fold state for a project
+    pub fn toggle_project_fold(&mut self, project_idx: usize) {
+        if let Some(project) = self.projects.get_mut(project_idx) {
+            project.folded = !project.folded;
+            // Rebuild selection items to reflect fold change
+            self.selection.rebuild_from_projects(&self.projects);
         }
     }
 
-    /// Get the selected project index from the Projects panel.
+    /// Get the selected project index (either directly or parent of selected spec)
     pub fn get_selected_project_index(&self) -> Option<usize> {
-        self.selection.selected_project()
+        self.selection.selected_project_index()
     }
 
-    /// Get the currently selected item in the sessions panel.
-    pub fn get_selected_session_panel_item(&self) -> Option<&SessionPanelItem> {
-        self.selection
-            .selected_session()
-            .and_then(|idx| self.session_panel_items.get(idx))
+    /// Get the selected spec (returns (project_index, spec_index) if a spec is selected)
+    pub fn get_selected_spec(&self) -> Option<(usize, usize)> {
+        self.selection.selected_spec()
     }
 
-    /// Get the selected session index (from either the sessions panel Session item).
-    /// Returns None if a ProjectHeader is selected in the sessions panel.
-    pub fn get_selected_session_index(&self) -> Option<usize> {
-        match self.get_selected_session_panel_item() {
-            Some(SessionPanelItem::Session { session_index }) => Some(*session_index),
-            _ => None,
-        }
-    }
-
-    /// Get the project index if a ProjectHeader is selected in the sessions panel.
-    pub fn get_selected_session_panel_project_index(&self) -> Option<usize> {
-        match self.get_selected_session_panel_item() {
-            Some(SessionPanelItem::ProjectHeader { project_index }) => Some(*project_index),
-            _ => None,
-        }
-    }
-
-    /// Get the effective selected project index from either:
-    /// - Projects panel selection, OR
-    /// - A ProjectHeader selected in the sessions panel
-    pub fn get_effective_project_index(&self) -> Option<usize> {
-        self.get_selected_project_index()
-            .or_else(|| self.get_selected_session_panel_project_index())
-    }
-
-    pub fn selected_project_has_sessions(&self) -> bool {
-        if let Some(project_idx) = self.get_effective_project_index() {
+    pub fn selected_project_has_running_specs(&self) -> bool {
+        if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                return !project.active_sessions.is_empty();
+                return project.specs.iter().any(|s| s.is_running());
             }
         }
         false
     }
 
     pub async fn pause_selected(&mut self) {
-        if let Some(idx) = self.get_selected_session_index() {
-            if let Some(session) = self.sessions.get(idx) {
-                match self.mutagen_client.pause_session(&session.identifier).await {
-                    Ok(_) => {
-                        self.status_message = Some(StatusMessage::info(format!(
-                            "Paused session: {}",
-                            session.name
-                        )));
-                    }
-                    Err(e) => {
-                        self.status_message =
-                            Some(StatusMessage::error(format!("Failed to pause: {}", e)));
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    if let Some(session) = &spec.running_session {
+                        match self.mutagen_client.pause_session(&session.identifier).await {
+                            Ok(_) => {
+                                self.status_message = Some(StatusMessage::info(format!(
+                                    "Paused spec: {}",
+                                    spec.name
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(StatusMessage::error(format!("Failed to pause: {}", e)));
+                            }
+                        }
                     }
                 }
             }
@@ -437,22 +271,22 @@ impl App {
     }
 
     pub async fn resume_selected(&mut self) {
-        if let Some(idx) = self.get_selected_session_index() {
-            if let Some(session) = self.sessions.get(idx) {
-                match self
-                    .mutagen_client
-                    .resume_session(&session.identifier)
-                    .await
-                {
-                    Ok(_) => {
-                        self.status_message = Some(StatusMessage::info(format!(
-                            "Resumed session: {}",
-                            session.name
-                        )));
-                    }
-                    Err(e) => {
-                        self.status_message =
-                            Some(StatusMessage::error(format!("Failed to resume: {}", e)));
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    if let Some(session) = &spec.running_session {
+                        match self.mutagen_client.resume_session(&session.identifier).await {
+                            Ok(_) => {
+                                self.status_message = Some(StatusMessage::info(format!(
+                                    "Resumed spec: {}",
+                                    spec.name
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(StatusMessage::error(format!("Failed to resume: {}", e)));
+                            }
+                        }
                     }
                 }
             }
@@ -460,28 +294,22 @@ impl App {
     }
 
     pub async fn terminate_selected(&mut self) {
-        if let Some(idx) = self.get_selected_session_index() {
-            if let Some(session) = self.sessions.get(idx) {
-                match self
-                    .mutagen_client
-                    .terminate_session(&session.identifier)
-                    .await
-                {
-                    Ok(_) => {
-                        self.status_message = Some(StatusMessage::info(format!(
-                            "Terminated session: {}",
-                            session.name
-                        )));
-                        self.sessions.remove(idx);
-                        // Rebuild session panel items and update selection manager
-                        self.session_panel_items =
-                            build_session_panel_items(&self.sessions, &self.projects);
-                        self.selection
-                            .update_sizes(self.projects.len(), self.session_panel_items.len());
-                    }
-                    Err(e) => {
-                        self.status_message =
-                            Some(StatusMessage::error(format!("Failed to terminate: {}", e)));
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    if let Some(session) = &spec.running_session {
+                        match self.mutagen_client.terminate_session(&session.identifier).await {
+                            Ok(_) => {
+                                self.status_message = Some(StatusMessage::info(format!(
+                                    "Terminated spec: {}",
+                                    spec.name
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(StatusMessage::error(format!("Failed to terminate: {}", e)));
+                            }
+                        }
                     }
                 }
             }
@@ -489,18 +317,22 @@ impl App {
     }
 
     pub async fn flush_selected(&mut self) {
-        if let Some(idx) = self.get_selected_session_index() {
-            if let Some(session) = self.sessions.get(idx) {
-                match self.mutagen_client.flush_session(&session.identifier).await {
-                    Ok(_) => {
-                        self.status_message = Some(StatusMessage::info(format!(
-                            "Flushed session: {}",
-                            session.name
-                        )));
-                    }
-                    Err(e) => {
-                        self.status_message =
-                            Some(StatusMessage::error(format!("Failed to flush: {}", e)));
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    if let Some(session) = &spec.running_session {
+                        match self.mutagen_client.flush_session(&session.identifier).await {
+                            Ok(_) => {
+                                self.status_message = Some(StatusMessage::info(format!(
+                                    "Flushed spec: {}",
+                                    spec.name
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_message =
+                                    Some(StatusMessage::error(format!("Failed to flush: {}", e)));
+                            }
+                        }
                     }
                 }
             }
@@ -508,7 +340,7 @@ impl App {
     }
 
     pub async fn start_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_effective_project_index() {
+        if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 match self.mutagen_client.start_project(&project.file.path).await {
                     Ok(_) => {
@@ -529,18 +361,13 @@ impl App {
     }
 
     pub async fn toggle_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_effective_project_index() {
+        if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                // Use project.is_active() which checks if there are active sessions
                 let is_running = project.is_active();
 
                 if is_running {
                     // Project is running → terminate it
-                    match self
-                        .mutagen_client
-                        .terminate_project(&project.file.path)
-                        .await
-                    {
+                    match self.mutagen_client.terminate_project(&project.file.path).await {
                         Ok(_) => {
                             self.status_message = Some(StatusMessage::info(format!(
                                 "Terminated project: {}",
@@ -557,11 +384,13 @@ impl App {
                 } else {
                     // Project not running → start it
                     // First terminate any lingering sessions that might interfere
-                    for session in &project.active_sessions {
-                        let _ = self
-                            .mutagen_client
-                            .terminate_session(&session.identifier)
-                            .await;
+                    for spec in &project.specs {
+                        if let Some(session) = &spec.running_session {
+                            let _ = self
+                                .mutagen_client
+                                .terminate_session(&session.identifier)
+                                .await;
+                        }
                     }
                     self.start_selected_project().await;
                 }
@@ -570,14 +399,16 @@ impl App {
     }
 
     pub async fn push_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_effective_project_index() {
+        if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                // Terminate all active sessions for this project before creating push sessions
-                for session in &project.active_sessions {
-                    let _ = self
-                        .mutagen_client
-                        .terminate_session(&session.identifier)
-                        .await;
+                // Terminate all running sessions for this project before creating push sessions
+                for spec in &project.specs {
+                    if let Some(session) = &spec.running_session {
+                        let _ = self
+                            .mutagen_client
+                            .terminate_session(&session.identifier)
+                            .await;
+                    }
                 }
 
                 if project.file.sessions.is_empty() {
@@ -681,21 +512,29 @@ impl App {
     }
 
     pub async fn pause_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_effective_project_index() {
+        if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                if project.active_sessions.is_empty() {
-                    self.status_message = Some(StatusMessage::info("No active sessions to pause"));
+                let running_specs: Vec<_> = project
+                    .specs
+                    .iter()
+                    .filter(|s| s.is_running())
+                    .collect();
+
+                if running_specs.is_empty() {
+                    self.status_message = Some(StatusMessage::info("No running specs to pause"));
                     return;
                 }
 
-                // Pause ALL active sessions individually
+                // Pause ALL running sessions individually
                 let mut paused_count = 0;
                 let mut errors: Vec<String> = Vec::new();
 
-                for session in &project.active_sessions {
-                    match self.mutagen_client.pause_session(&session.identifier).await {
-                        Ok(_) => paused_count += 1,
-                        Err(e) => errors.push(format!("{}: {}", session.name, e)),
+                for spec in running_specs {
+                    if let Some(session) = &spec.running_session {
+                        match self.mutagen_client.pause_session(&session.identifier).await {
+                            Ok(_) => paused_count += 1,
+                            Err(e) => errors.push(format!("{}: {}", spec.name, e)),
+                        }
                     }
                 }
 
@@ -722,25 +561,29 @@ impl App {
     }
 
     pub async fn resume_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_effective_project_index() {
+        if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                if project.active_sessions.is_empty() {
-                    self.status_message = Some(StatusMessage::info("No active sessions to resume"));
+                let running_specs: Vec<_> = project
+                    .specs
+                    .iter()
+                    .filter(|s| s.is_running())
+                    .collect();
+
+                if running_specs.is_empty() {
+                    self.status_message = Some(StatusMessage::info("No running specs to resume"));
                     return;
                 }
 
-                // Resume ALL active sessions individually
+                // Resume ALL running sessions individually
                 let mut resumed_count = 0;
                 let mut errors: Vec<String> = Vec::new();
 
-                for session in &project.active_sessions {
-                    match self
-                        .mutagen_client
-                        .resume_session(&session.identifier)
-                        .await
-                    {
-                        Ok(_) => resumed_count += 1,
-                        Err(e) => errors.push(format!("{}: {}", session.name, e)),
+                for spec in running_specs {
+                    if let Some(session) = &spec.running_session {
+                        match self.mutagen_client.resume_session(&session.identifier).await {
+                            Ok(_) => resumed_count += 1,
+                            Err(e) => errors.push(format!("{}: {}", spec.name, e)),
+                        }
                     }
                 }
 
@@ -767,28 +610,31 @@ impl App {
     }
 
     pub async fn toggle_pause_selected(&mut self) {
-        if let Some(idx) = self.get_selected_session_index() {
-            // Individual session selected - toggle its pause state
-            if let Some(session) = self.sessions.get(idx) {
-                if session.paused {
-                    self.resume_selected().await;
-                } else {
-                    self.pause_selected().await;
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            // Individual spec selected - toggle its pause state
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    if spec.is_paused() {
+                        self.resume_selected().await;
+                    } else {
+                        self.pause_selected().await;
+                    }
                 }
             }
-        } else if let Some(project_idx) = self.get_effective_project_index() {
-            // Project selected (from either panel) - toggle pause for all its sessions
+        } else if let Some(project_idx) = self.get_selected_project_index() {
+            // Project selected - toggle pause for all its running specs
             if let Some(project) = self.projects.get(project_idx) {
-                // Only pause/resume if project has active sessions
-                if project.active_sessions.is_empty() {
+                let running_specs: Vec<_> = project.specs.iter().filter(|s| s.is_running()).collect();
+
+                if running_specs.is_empty() {
                     self.status_message = Some(StatusMessage::info(
-                        "Project has no active sessions. Use 's' to start.",
+                        "Project has no running specs. Use 's' to start.",
                     ));
                     return;
                 }
 
-                // Check if any session is running (not paused)
-                let has_running = project.active_sessions.iter().any(|s| !s.paused);
+                // Check if any spec is running (not paused)
+                let has_running = running_specs.iter().any(|s| !s.is_paused());
                 if has_running {
                     self.pause_selected_project().await;
                 } else {
@@ -817,32 +663,36 @@ impl App {
     }
 
     pub fn toggle_conflict_view(&mut self) {
-        if let Some(idx) = self.get_selected_session_index() {
-            if let Some(session) = self.sessions.get(idx) {
-                if session.has_conflicts() {
-                    self.viewing_conflicts = !self.viewing_conflicts;
-                    if self.viewing_conflicts {
-                        self.status_message = Some(StatusMessage::info(format!(
-                            "Viewing conflicts for: {}",
-                            session.name
-                        )));
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    if spec.has_conflicts() {
+                        self.viewing_conflicts = !self.viewing_conflicts;
+                        if self.viewing_conflicts {
+                            self.status_message = Some(StatusMessage::info(format!(
+                                "Viewing conflicts for: {}",
+                                spec.name
+                            )));
+                        } else {
+                            self.status_message = Some(StatusMessage::info("Closed conflict view"));
+                        }
                     } else {
-                        self.status_message = Some(StatusMessage::info("Closed conflict view"));
+                        self.status_message =
+                            Some(StatusMessage::error("No conflicts in selected spec"));
                     }
-                } else {
-                    self.status_message =
-                        Some(StatusMessage::error("No conflicts in selected session"));
                 }
             }
         } else {
-            self.status_message = Some(StatusMessage::error("Select a session to view conflicts"));
+            self.status_message = Some(StatusMessage::error("Select a spec to view conflicts"));
         }
     }
 
-    pub fn get_selected_session_conflicts(&self) -> Option<&Vec<crate::mutagen::Conflict>> {
-        if let Some(idx) = self.get_selected_session_index() {
-            if let Some(session) = self.sessions.get(idx) {
-                return Some(&session.conflicts);
+    pub fn get_selected_spec_conflicts(&self) -> Option<&Vec<crate::mutagen::Conflict>> {
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    return spec.conflicts();
+                }
             }
         }
         None

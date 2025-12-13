@@ -39,6 +39,7 @@ fn project_has_running_sessions(project_file: &Path, sessions: &[SyncSession]) -
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub enum SyncTime {
     Never, // Brand new session, no syncs yet
     #[default]
@@ -247,36 +248,6 @@ impl SyncSession {
         None
     }
 
-    pub fn time_ago_display(&self) -> String {
-        match &self.sync_time {
-            SyncTime::At(sync_time) => {
-                let now = Local::now();
-                let duration = now.signed_duration_since(*sync_time);
-                let seconds = duration.num_seconds();
-
-                if seconds < 60 {
-                    "just now".to_string()
-                } else if seconds < 120 {
-                    "1 min ago".to_string()
-                } else if seconds < 3600 {
-                    let mins = seconds / 60;
-                    format!("{} mins ago", mins)
-                } else if seconds < 7200 {
-                    "1 hour ago".to_string()
-                } else if seconds < 86400 {
-                    let hours = seconds / 3600;
-                    format!("{} hours ago", hours)
-                } else if seconds < 172800 {
-                    "1 day ago".to_string()
-                } else {
-                    let days = seconds / 86400;
-                    format!("{} days ago", days)
-                }
-            }
-            SyncTime::Unknown => "unknown".to_string(),
-            SyncTime::Never => "never".to_string(),
-        }
-    }
 }
 
 /// Type alias for the production MutagenClient.

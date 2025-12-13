@@ -1,34 +1,32 @@
 //! Selection state management for the TUI.
 //!
 //! This module encapsulates all selection logic, including navigation
-//! and focus area management, in a single testable type.
+//! in a unified panel that shows projects with their sync specs.
 
-/// Manages selection state across projects and sessions lists.
-///
-/// The selection model treats projects and sessions as a single unified list
-/// where projects come first (indices 0..projects_len) followed by sessions
-/// (indices projects_len..projects_len+sessions_len).
-#[derive(Debug, Clone)]
-pub struct SelectionManager {
-    /// Number of projects in the list
-    projects_len: usize,
-    /// Number of sessions in the list
-    sessions_len: usize,
-    /// Currently selected index in the unified list
-    selected_index: usize,
-    /// Last selected index in the projects area (for focus restoration)
-    last_project_index: Option<usize>,
-    /// Last selected session index (relative, not absolute)
-    last_session_index: Option<usize>,
-    /// Current focus area
-    focus_area: FocusArea,
+use crate::project::Project;
+
+/// Item that can be selected in the unified panel
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectableItem {
+    /// A project header (can be folded/unfolded)
+    Project { index: usize },
+    /// A sync spec within a project
+    Spec {
+        project_index: usize,
+        spec_index: usize,
+    },
 }
 
-/// Which area of the UI has focus
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusArea {
-    Projects,
-    Sessions,
+/// Manages selection state in the unified project/spec tree.
+///
+/// The selection model maintains a flattened list of selectable items
+/// (projects and their specs) that gets rebuilt when fold states change.
+#[derive(Debug, Clone)]
+pub struct SelectionManager {
+    /// Flattened list of selectable items (projects and their specs)
+    items: Vec<SelectableItem>,
+    /// Currently selected index into items
+    selected_index: usize,
 }
 
 impl Default for SelectionManager {
@@ -38,40 +36,44 @@ impl Default for SelectionManager {
 }
 
 impl SelectionManager {
-    /// Create a new SelectionManager with empty lists.
+    /// Create a new SelectionManager with empty list.
     pub fn new() -> Self {
         Self {
-            projects_len: 0,
-            sessions_len: 0,
+            items: Vec::new(),
             selected_index: 0,
-            last_project_index: None,
-            last_session_index: None,
-            focus_area: FocusArea::Projects,
         }
     }
 
-    /// Update the list sizes and clamp selection if needed.
-    pub fn update_sizes(&mut self, projects_len: usize, sessions_len: usize) {
-        self.projects_len = projects_len;
-        self.sessions_len = sessions_len;
+    /// Rebuild items list from projects
+    pub fn rebuild_from_projects(&mut self, projects: &[Project]) {
+        self.items.clear();
+
+        for (proj_idx, project) in projects.iter().enumerate() {
+            // Add project header
+            self.items.push(SelectableItem::Project { index: proj_idx });
+
+            // Add specs if unfolded
+            if !project.folded {
+                for spec_idx in 0..project.specs.len() {
+                    self.items.push(SelectableItem::Spec {
+                        project_index: proj_idx,
+                        spec_index: spec_idx,
+                    });
+                }
+            }
+        }
 
         // Clamp selection to valid range
-        let total = self.total_items();
-        if total > 0 && self.selected_index >= total {
-            self.selected_index = total - 1;
-        }
-
-        // Update focus area based on current selection
-        if self.selected_index < projects_len {
-            self.focus_area = FocusArea::Projects;
-        } else if sessions_len > 0 {
-            self.focus_area = FocusArea::Sessions;
+        if !self.items.is_empty() && self.selected_index >= self.items.len() {
+            self.selected_index = self.items.len() - 1;
+        } else if self.items.is_empty() {
+            self.selected_index = 0;
         }
     }
 
-    /// Get the total number of items (projects + sessions).
+    /// Get the total number of items.
     pub fn total_items(&self) -> usize {
-        self.projects_len + self.sessions_len
+        self.items.len()
     }
 
     /// Get the raw selected index (for UI rendering).
@@ -79,27 +81,43 @@ impl SelectionManager {
         self.selected_index
     }
 
-    /// Get the currently selected project index, if a project is selected.
-    pub fn selected_project(&self) -> Option<usize> {
-        if self.selected_index < self.projects_len {
-            Some(self.selected_index)
-        } else {
-            None
+    /// Get an iterator over all items (for UI rendering).
+    pub fn items(&self) -> impl Iterator<Item = &SelectableItem> {
+        self.items.iter()
+    }
+
+    /// Get currently selected item
+    pub fn selected_item(&self) -> Option<&SelectableItem> {
+        self.items.get(self.selected_index)
+    }
+
+    /// Get selected project index (either directly or parent of selected spec)
+    pub fn selected_project_index(&self) -> Option<usize> {
+        match self.selected_item()? {
+            SelectableItem::Project { index } => Some(*index),
+            SelectableItem::Spec { project_index, .. } => Some(*project_index),
         }
     }
 
-    /// Get the currently selected session index (relative to sessions list).
-    pub fn selected_session(&self) -> Option<usize> {
-        if self.selected_index >= self.projects_len && self.sessions_len > 0 {
-            Some(self.selected_index - self.projects_len)
-        } else {
-            None
+    /// Get selected spec if any (returns (project_index, spec_index))
+    pub fn selected_spec(&self) -> Option<(usize, usize)> {
+        match self.selected_item()? {
+            SelectableItem::Spec {
+                project_index,
+                spec_index,
+            } => Some((*project_index, *spec_index)),
+            _ => None,
         }
     }
 
-    /// Get the current focus area.
-    pub fn focus_area(&self) -> FocusArea {
-        self.focus_area
+    /// Check if a project is selected (not a spec)
+    pub fn is_project_selected(&self) -> bool {
+        matches!(self.selected_item(), Some(SelectableItem::Project { .. }))
+    }
+
+    /// Check if a spec is selected
+    pub fn is_spec_selected(&self) -> bool {
+        matches!(self.selected_item(), Some(SelectableItem::Spec { .. }))
     }
 
     /// Move selection to the next item (wraps around).
@@ -107,7 +125,6 @@ impl SelectionManager {
         let total = self.total_items();
         if total > 0 {
             self.selected_index = (self.selected_index + 1) % total;
-            self.update_focus_from_selection();
         }
     }
 
@@ -120,61 +137,36 @@ impl SelectionManager {
             } else {
                 self.selected_index -= 1;
             }
-            self.update_focus_from_selection();
         }
     }
 
-    /// Toggle focus between Projects and Sessions areas.
-    ///
-    /// This saves the current position before switching and tries to restore
-    /// the previous position in the new area, or find a related item.
-    pub fn toggle_focus(&mut self) {
-        // Save current position
-        self.save_current_position();
-
-        // Toggle focus area
-        self.focus_area = match self.focus_area {
-            FocusArea::Projects => FocusArea::Sessions,
-            FocusArea::Sessions => FocusArea::Projects,
-        };
-
-        // Determine new selection
-        match self.focus_area {
-            FocusArea::Projects => {
-                if self.projects_len == 0 {
-                    // No projects, stay in sessions
-                    self.focus_area = FocusArea::Sessions;
+    /// Select a specific project by index
+    #[allow(dead_code)]
+    pub fn select_project(&mut self, project_idx: usize) {
+        // Find the first item that matches this project (the header)
+        for (idx, item) in self.items.iter().enumerate() {
+            if let SelectableItem::Project { index } = item {
+                if *index == project_idx {
+                    self.selected_index = idx;
                     return;
                 }
-
-                // Try to restore last position
-                if let Some(last_idx) = self.last_project_index {
-                    if last_idx < self.projects_len {
-                        self.selected_index = last_idx;
-                        return;
-                    }
-                }
-
-                // Default to first project
-                self.selected_index = 0;
             }
-            FocusArea::Sessions => {
-                if self.sessions_len == 0 {
-                    // No sessions, stay in projects
-                    self.focus_area = FocusArea::Projects;
+        }
+    }
+
+    /// Select a specific spec by project and spec indices
+    #[allow(dead_code)]
+    pub fn select_spec(&mut self, project_idx: usize, spec_idx: usize) {
+        for (idx, item) in self.items.iter().enumerate() {
+            if let SelectableItem::Spec {
+                project_index,
+                spec_index,
+            } = item
+            {
+                if *project_index == project_idx && *spec_index == spec_idx {
+                    self.selected_index = idx;
                     return;
                 }
-
-                // Try to restore last position
-                if let Some(last_idx) = self.last_session_index {
-                    if last_idx < self.sessions_len {
-                        self.selected_index = self.projects_len + last_idx;
-                        return;
-                    }
-                }
-
-                // Default to first session
-                self.selected_index = self.projects_len;
             }
         }
     }
@@ -185,41 +177,6 @@ impl SelectionManager {
         let total = self.total_items();
         if total > 0 {
             self.selected_index = index.min(total - 1);
-            self.update_focus_from_selection();
-        }
-    }
-
-    /// Try to select a specific project by index.
-    pub fn select_project(&mut self, project_idx: usize) {
-        if project_idx < self.projects_len {
-            self.selected_index = project_idx;
-            self.focus_area = FocusArea::Projects;
-        }
-    }
-
-    /// Try to select a specific session by index.
-    pub fn select_session(&mut self, session_idx: usize) {
-        if session_idx < self.sessions_len {
-            self.selected_index = self.projects_len + session_idx;
-            self.focus_area = FocusArea::Sessions;
-        }
-    }
-
-    /// Save current position for focus restoration.
-    fn save_current_position(&mut self) {
-        if let Some(proj_idx) = self.selected_project() {
-            self.last_project_index = Some(proj_idx);
-        } else if let Some(sess_idx) = self.selected_session() {
-            self.last_session_index = Some(sess_idx);
-        }
-    }
-
-    /// Update focus area based on current selection.
-    fn update_focus_from_selection(&mut self) {
-        if self.selected_index < self.projects_len {
-            self.focus_area = FocusArea::Projects;
-        } else {
-            self.focus_area = FocusArea::Sessions;
         }
     }
 }
@@ -227,38 +184,124 @@ impl SelectionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::{Project, ProjectFile, SessionDefinition, SyncSpec, SyncSpecState};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn make_test_project(name: &str, spec_count: usize, folded: bool) -> Project {
+        let mut sessions = HashMap::new();
+        let mut specs = Vec::new();
+
+        for i in 0..spec_count {
+            let spec_name = format!("spec-{}", i);
+            sessions.insert(
+                spec_name.clone(),
+                SessionDefinition {
+                    alpha: "/local".to_string(),
+                    beta: "server:/remote".to_string(),
+                    mode: None,
+                    ignore: None,
+                },
+            );
+            specs.push(SyncSpec {
+                name: spec_name,
+                definition: SessionDefinition {
+                    alpha: "/local".to_string(),
+                    beta: "server:/remote".to_string(),
+                    mode: None,
+                    ignore: None,
+                },
+                state: SyncSpecState::NotRunning,
+                running_session: None,
+            });
+        }
+
+        Project {
+            file: ProjectFile {
+                path: PathBuf::from(format!("/test/{}.yml", name)),
+                target_name: None,
+                sessions,
+                defaults: None,
+            },
+            specs,
+            folded,
+        }
+    }
 
     #[test]
     fn test_new_selection_manager() {
         let sel = SelectionManager::new();
         assert_eq!(sel.raw_index(), 0);
-        assert_eq!(sel.selected_project(), None);
-        assert_eq!(sel.selected_session(), None);
+        assert_eq!(sel.selected_item(), None);
     }
 
     #[test]
-    fn test_update_sizes() {
+    fn test_rebuild_from_projects_folded() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(3, 5);
+        let projects = vec![
+            make_test_project("p1", 2, true),  // Folded
+            make_test_project("p2", 3, true),  // Folded
+        ];
 
-        assert_eq!(sel.total_items(), 8);
-        assert_eq!(sel.selected_project(), Some(0));
-        assert_eq!(sel.selected_session(), None);
+        sel.rebuild_from_projects(&projects);
+
+        // Only project headers should be in items
+        assert_eq!(sel.total_items(), 2);
+        assert_eq!(
+            sel.selected_item(),
+            Some(&SelectableItem::Project { index: 0 })
+        );
+    }
+
+    #[test]
+    fn test_rebuild_from_projects_unfolded() {
+        let mut sel = SelectionManager::new();
+        let projects = vec![
+            make_test_project("p1", 2, false), // Unfolded with 2 specs
+            make_test_project("p2", 1, true),  // Folded with 1 spec
+        ];
+
+        sel.rebuild_from_projects(&projects);
+
+        // p1 header + 2 specs + p2 header = 4 items
+        assert_eq!(sel.total_items(), 4);
+
+        // Items should be: Project(0), Spec(0,0), Spec(0,1), Project(1)
+        assert_eq!(sel.items[0], SelectableItem::Project { index: 0 });
+        assert_eq!(
+            sel.items[1],
+            SelectableItem::Spec {
+                project_index: 0,
+                spec_index: 0
+            }
+        );
+        assert_eq!(
+            sel.items[2],
+            SelectableItem::Spec {
+                project_index: 0,
+                spec_index: 1
+            }
+        );
+        assert_eq!(sel.items[3], SelectableItem::Project { index: 1 });
     }
 
     #[test]
     fn test_select_next_wraps() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(2, 3); // 5 total items
+        let projects = vec![
+            make_test_project("p1", 2, false), // 3 items total
+        ];
+
+        sel.rebuild_from_projects(&projects);
 
         // Start at 0
         assert_eq!(sel.raw_index(), 0);
 
-        // Move to end
-        for _ in 0..4 {
-            sel.select_next();
-        }
-        assert_eq!(sel.raw_index(), 4);
+        sel.select_next();
+        assert_eq!(sel.raw_index(), 1);
+
+        sel.select_next();
+        assert_eq!(sel.raw_index(), 2);
 
         // Should wrap to 0
         sel.select_next();
@@ -268,162 +311,142 @@ mod tests {
     #[test]
     fn test_select_previous_wraps() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(2, 3);
+        let projects = vec![make_test_project("p1", 2, false)];
+
+        sel.rebuild_from_projects(&projects);
 
         // Start at 0, go backwards
         sel.select_previous();
-        assert_eq!(sel.raw_index(), 4); // Wrapped to last item
+        assert_eq!(sel.raw_index(), 2); // Wrapped to last item
     }
 
     #[test]
-    fn test_selected_project_vs_session() {
+    fn test_selected_project_index() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(2, 3);
+        let projects = vec![
+            make_test_project("p1", 2, false),
+            make_test_project("p2", 1, false),
+        ];
 
-        // Index 0, 1 = projects
-        assert_eq!(sel.selected_project(), Some(0));
-        assert_eq!(sel.selected_session(), None);
+        sel.rebuild_from_projects(&projects);
+
+        // At project 0 header
+        assert_eq!(sel.selected_project_index(), Some(0));
+
+        sel.select_next(); // At spec 0,0
+        assert_eq!(sel.selected_project_index(), Some(0)); // Still project 0
+
+        sel.select_next(); // At spec 0,1
+        assert_eq!(sel.selected_project_index(), Some(0)); // Still project 0
+
+        sel.select_next(); // At project 1 header
+        assert_eq!(sel.selected_project_index(), Some(1));
+    }
+
+    #[test]
+    fn test_selected_spec() {
+        let mut sel = SelectionManager::new();
+        let projects = vec![make_test_project("p1", 2, false)];
+
+        sel.rebuild_from_projects(&projects);
+
+        // At project header
+        assert_eq!(sel.selected_spec(), None);
+
+        sel.select_next(); // At spec 0,0
+        assert_eq!(sel.selected_spec(), Some((0, 0)));
+
+        sel.select_next(); // At spec 0,1
+        assert_eq!(sel.selected_spec(), Some((0, 1)));
+    }
+
+    #[test]
+    fn test_is_project_selected() {
+        let mut sel = SelectionManager::new();
+        let projects = vec![make_test_project("p1", 1, false)];
+
+        sel.rebuild_from_projects(&projects);
+
+        assert!(sel.is_project_selected());
+        assert!(!sel.is_spec_selected());
 
         sel.select_next();
-        assert_eq!(sel.selected_project(), Some(1));
-        assert_eq!(sel.selected_session(), None);
-
-        sel.select_next();
-        // Index 2 = first session
-        assert_eq!(sel.selected_project(), None);
-        assert_eq!(sel.selected_session(), Some(0));
-
-        sel.select_next();
-        assert_eq!(sel.selected_session(), Some(1));
+        assert!(!sel.is_project_selected());
+        assert!(sel.is_spec_selected());
     }
 
     #[test]
     fn test_clamp_on_shrink() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(5, 5);
-        sel.set_index(8); // Valid in 10-item list
+        let projects = vec![make_test_project("p1", 5, false)];
 
-        sel.update_sizes(2, 2); // Shrink to 4 items
+        sel.rebuild_from_projects(&projects);
+        sel.set_index(5); // Valid in 6-item list
 
-        assert_eq!(sel.raw_index(), 3); // Clamped to max
-    }
+        // Rebuild with fewer specs
+        let projects = vec![make_test_project("p1", 2, false)];
+        sel.rebuild_from_projects(&projects);
 
-    #[test]
-    fn test_toggle_focus_saves_position() {
-        let mut sel = SelectionManager::new();
-        sel.update_sizes(3, 3);
-
-        // Start in projects, move to index 2
-        sel.set_index(2);
-        assert_eq!(sel.selected_project(), Some(2));
-
-        // Toggle to sessions
-        sel.toggle_focus();
-        assert_eq!(sel.focus_area(), FocusArea::Sessions);
-        assert_eq!(sel.selected_session(), Some(0));
-
-        // Toggle back to projects
-        sel.toggle_focus();
-        assert_eq!(sel.focus_area(), FocusArea::Projects);
-        assert_eq!(sel.selected_project(), Some(2)); // Restored position
-    }
-
-    #[test]
-    fn test_toggle_focus_empty_sessions() {
-        let mut sel = SelectionManager::new();
-        sel.update_sizes(3, 0); // No sessions
-
-        sel.toggle_focus(); // Try to go to sessions
-
-        // Should stay in projects since sessions is empty
-        assert_eq!(sel.focus_area(), FocusArea::Projects);
-    }
-
-    #[test]
-    fn test_toggle_focus_empty_projects() {
-        let mut sel = SelectionManager::new();
-        sel.update_sizes(0, 3); // No projects
-
-        // Force focus to sessions first
-        sel.set_index(0);
-        sel.toggle_focus(); // Try to go to projects
-
-        // Should stay in sessions since projects is empty
-        assert_eq!(sel.focus_area(), FocusArea::Sessions);
+        assert_eq!(sel.raw_index(), 2); // Clamped to max
     }
 
     #[test]
     fn test_select_project_by_index() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(3, 3);
-        sel.set_index(5); // Start in sessions
+        let projects = vec![
+            make_test_project("p1", 2, false),
+            make_test_project("p2", 1, false),
+        ];
+
+        sel.rebuild_from_projects(&projects);
+        sel.set_index(2); // Start at spec
 
         sel.select_project(1);
 
-        assert_eq!(sel.raw_index(), 1);
-        assert_eq!(sel.focus_area(), FocusArea::Projects);
+        assert_eq!(sel.selected_project_index(), Some(1));
+        assert!(sel.is_project_selected());
     }
 
     #[test]
-    fn test_select_session_by_index() {
+    fn test_select_spec_by_index() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(3, 3);
-        sel.set_index(0); // Start in projects
+        let projects = vec![make_test_project("p1", 3, false)];
 
-        sel.select_session(2);
+        sel.rebuild_from_projects(&projects);
+        sel.set_index(0); // Start at project header
 
-        assert_eq!(sel.raw_index(), 5); // 3 projects + 2
-        assert_eq!(sel.focus_area(), FocusArea::Sessions);
-    }
+        sel.select_spec(0, 2);
 
-    #[test]
-    fn test_focus_updates_on_navigation() {
-        let mut sel = SelectionManager::new();
-        sel.update_sizes(2, 2);
-
-        assert_eq!(sel.focus_area(), FocusArea::Projects);
-
-        sel.select_next();
-        sel.select_next(); // Now at first session
-        assert_eq!(sel.focus_area(), FocusArea::Sessions);
-
-        sel.select_previous(); // Back to last project
-        assert_eq!(sel.focus_area(), FocusArea::Projects);
+        assert_eq!(sel.selected_spec(), Some((0, 2)));
+        assert!(sel.is_spec_selected());
     }
 
     #[test]
     fn test_empty_list_navigation() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(0, 0);
+        sel.rebuild_from_projects(&[]);
 
         // Navigation should not panic with empty lists
         sel.select_next();
         sel.select_previous();
-        sel.toggle_focus();
 
         assert_eq!(sel.raw_index(), 0);
+        assert_eq!(sel.selected_item(), None);
     }
 
     #[test]
-    fn test_only_projects() {
+    fn test_rebuild_preserves_selection_where_possible() {
         let mut sel = SelectionManager::new();
-        sel.update_sizes(3, 0);
+        let projects = vec![make_test_project("p1", 3, false)];
 
-        sel.select_next();
-        sel.select_next();
-        assert_eq!(sel.selected_project(), Some(2));
-        assert_eq!(sel.selected_session(), None);
-    }
+        sel.rebuild_from_projects(&projects);
+        sel.set_index(2); // Select spec 0,1
 
-    #[test]
-    fn test_only_sessions() {
-        let mut sel = SelectionManager::new();
-        sel.update_sizes(0, 3);
+        // Rebuild with same structure
+        sel.rebuild_from_projects(&projects);
 
-        assert_eq!(sel.selected_project(), None);
-        assert_eq!(sel.selected_session(), Some(0));
-
-        sel.select_next();
-        assert_eq!(sel.selected_session(), Some(1));
+        // Selection should still be at index 2
+        assert_eq!(sel.raw_index(), 2);
+        assert_eq!(sel.selected_spec(), Some((0, 1)));
     }
 }

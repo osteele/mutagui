@@ -1,4 +1,6 @@
-use crate::app::{App, SessionDisplayMode, SessionPanelItem};
+use crate::app::App;
+use crate::selection::SelectableItem;
+use crate::project::SyncSpecState;
 use crate::widgets::{HelpBar, StyledText};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -89,43 +91,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_header(f, app, chunks[0]);
 
-    if app.sessions.is_empty() && app.projects.is_empty() {
+    if app.projects.is_empty() {
         draw_empty_state(f, app, chunks[1]);
     } else {
-        // Build constraints based on what's present
-        // Use Percentage(100) when only one section exists to fill the viewport
-        let has_sessions = !app.sessions.is_empty();
-        let has_projects = !app.projects.is_empty();
-
-        let mut constraints = Vec::new();
-        if has_projects {
-            if has_sessions {
-                constraints.push(Constraint::Percentage(50)); // Both: split 50/50
-            } else {
-                constraints.push(Constraint::Percentage(100)); // Projects only: fill viewport
-            }
-        }
-        if has_sessions {
-            if has_projects {
-                constraints.push(Constraint::Percentage(50)); // Both: split 50/50
-            } else {
-                constraints.push(Constraint::Percentage(100)); // Sessions only: fill viewport
-            }
-        }
-
-        let content_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(constraints)
-            .split(chunks[1]);
-
-        let mut chunk_idx = 0;
-        if !app.projects.is_empty() {
-            draw_projects(f, app, content_chunks[chunk_idx]);
-            chunk_idx += 1;
-        }
-        if !app.sessions.is_empty() {
-            draw_sessions(f, app, content_chunks[chunk_idx]);
-        }
+        draw_unified_panel(f, app, chunks[1]);
     }
 
     draw_status(f, app, chunks[2]);
@@ -148,7 +117,7 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         StyledText::new(theme)
             .styled(
-                "No Mutagen sessions or projects found",
+                "No Mutagen projects found",
                 Style::default()
                     .fg(theme.session_status_fg)
                     .add_modifier(Modifier::BOLD),
@@ -156,10 +125,10 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
             .build(),
         Line::from(""),
         StyledText::new(theme)
-            .help_text("• Start a new session with: mutagen sync create")
+            .help_text("• Create a mutagen.yml file in your project directory")
             .build(),
         StyledText::new(theme)
-            .help_text("• Or create a mutagen.yml file in your project directory")
+            .help_text("• Press 'r' to refresh")
             .build(),
     ])
     .block(Block::default().borders(Borders::ALL).title("Welcome"))
@@ -179,209 +148,27 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(title, area);
 }
 
-/// Get the display name for a session, with project prefix if applicable
-fn get_session_display_name(app: &App, session: &crate::mutagen::SyncSession) -> String {
-    // Find which project owns this session
-    for project in &app.projects {
-        if project
-            .active_sessions
-            .iter()
-            .any(|s| s.name == session.name)
-        {
-            // Session belongs to this project - format as "project-name > session-name"
-            let project_name = project.file.display_name();
-            return format!("{} > {}", project_name, session.name);
-        }
-    }
-    // Session doesn't belong to any project - just show the name
-    session.name.clone()
-}
-
-/// Build spans for a single session row (used in both flat and hierarchical modes)
-fn build_session_spans(
-    app: &App,
-    session: &crate::mutagen::SyncSession,
-    display_name: &str,
-    indent: &str,
-) -> Vec<Span<'static>> {
-    let status_icon = if session.paused { "⏸" } else { "▶" };
-    let status_color = if session.paused {
-        app.color_scheme.status_paused_fg
-    } else {
-        app.color_scheme.status_running_fg
-    };
-
-    let mut spans = vec![
-        Span::styled(indent.to_string(), Style::default()),
-        Span::styled(
-            format!("{} ", status_icon),
-            Style::default().fg(status_color),
-        ),
-        Span::styled(
-            format!("{:<30}", display_name),
-            Style::default()
-                .fg(app.color_scheme.session_name_fg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-    ];
-
-    match app.session_display_mode {
-        SessionDisplayMode::ShowPaths => {
-            // Session status icon (watching, scanning, etc.)
-            spans.push(Span::styled(
-                format!("{}  ", session.status_icon()),
-                Style::default().fg(app.color_scheme.session_status_fg),
-            ));
-            // Alpha endpoint status and path
-            spans.push(Span::styled(
-                session.alpha.status_icon().to_string(),
-                Style::default().fg(if session.alpha.connected {
-                    app.color_scheme.status_running_fg
-                } else {
-                    app.color_scheme.status_paused_fg
-                }),
-            ));
-            spans.push(Span::styled(
-                format!("{} ", session.alpha_display()),
-                Style::default().fg(app.color_scheme.session_alpha_fg),
-            ));
-            // Arrow and beta endpoint
-            spans.extend(vec![
-                Span::raw("⇄ ".to_string()),
-                Span::styled(
-                    session.beta.status_icon().to_string(),
-                    Style::default().fg(if session.beta.connected {
-                        app.color_scheme.status_running_fg
-                    } else {
-                        app.color_scheme.status_paused_fg
-                    }),
-                ),
-                Span::styled(
-                    session.beta_display(),
-                    Style::default().fg(app.color_scheme.session_beta_fg),
-                ),
-            ]);
-        }
-        SessionDisplayMode::ShowLastRefresh => {
-            spans.push(Span::styled(
-                format!("Last synced: {}", session.time_ago_display()),
-                Style::default().fg(app.color_scheme.session_status_fg),
-            ));
-        }
-    }
-
-    // Add push indicator for one-way-replica sessions
-    if let Some(ref mode) = session.mode {
-        if mode == "one-way-replica" {
-            spans.push(Span::raw(" ".to_string()));
-            spans.push(Span::styled(
-                "⬆".to_string(),
-                Style::default()
-                    .fg(app.color_scheme.status_running_fg)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-    }
-
-    // Add conflict indicator
-    if session.has_conflicts() {
-        spans.push(Span::raw(" ".to_string()));
-        spans.push(Span::styled(
-            format!(
-                "⚠ {} conflict{}",
-                session.conflict_count(),
-                if session.conflict_count() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ),
-            Style::default()
-                .fg(app.color_scheme.help_key_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-
-    spans
-}
-
-fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
+/// Draw the unified panel showing projects and their sync specs
+fn draw_unified_panel(f: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.color_scheme;
     let mut items: Vec<ListItem> = Vec::new();
 
-    // Track which session indices belong to which project for indentation
-    let mut current_project_session_count = 0;
-    let mut current_project_total_sessions = 0;
-    let mut in_project_group = false;
+    // Count total specs across all projects
+    let total_specs: usize = app.projects.iter().map(|p| p.specs.len()).sum();
 
-    for (item_index, panel_item) in app.session_panel_items.iter().enumerate() {
-        let is_selected = item_index + app.projects.len() == app.selected_index();
+    // Build list items from the selection manager's flattened view
+    for (item_idx, item) in app.selection.items().enumerate() {
+        let is_selected = item_idx == app.selection.raw_index();
 
-        match panel_item {
-            SessionPanelItem::ProjectHeader { project_index } => {
-                // Start a new project group
-                if let Some(project) = app.projects.get(*project_index) {
-                    // Count sessions that belong to this project (following items until next header or end)
-                    let session_count = app.session_panel_items[item_index + 1..]
-                        .iter()
-                        .take_while(|item| matches!(item, SessionPanelItem::Session { .. }))
-                        .count();
-
-                    current_project_session_count = 0;
-                    current_project_total_sessions = session_count;
-                    in_project_group = true;
-
-                    let count_text = if session_count == 1 {
-                        String::new()
-                    } else {
-                        format!(" ({} sessions)", session_count)
-                    };
-
-                    let header_spans = vec![
-                        Span::styled(
-                            format!("┌─ {}", project.file.display_name()),
-                            Style::default()
-                                .fg(app.color_scheme.session_name_fg)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            count_text,
-                            Style::default().fg(app.color_scheme.session_status_fg),
-                        ),
-                    ];
+        match item {
+            SelectableItem::Project { index: proj_idx } => {
+                // Render project header
+                if let Some(project) = app.projects.get(*proj_idx) {
+                    let spans = render_project_header(app, project);
 
                     let style = if is_selected {
                         Style::default()
-                            .bg(app.color_scheme.selection_bg)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-
-                    items.push(ListItem::new(Line::from(header_spans)).style(style));
-                }
-            }
-            SessionPanelItem::Session { session_index } => {
-                if let Some(session) = app.sessions.get(*session_index) {
-                    let (display_name, prefix) = if in_project_group {
-                        current_project_session_count += 1;
-                        let is_last =
-                            current_project_session_count >= current_project_total_sessions;
-                        if is_last {
-                            in_project_group = false; // Reset for next group
-                        }
-                        let prefix = if is_last { "└─ " } else { "├─ " };
-                        (session.name.clone(), prefix)
-                    } else {
-                        // Standalone session - use full display name
-                        (get_session_display_name(app, session), "")
-                    };
-
-                    let spans = build_session_spans(app, session, &display_name, prefix);
-
-                    let style = if is_selected {
-                        Style::default()
-                            .bg(app.color_scheme.selection_bg)
+                            .bg(theme.selection_bg)
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
@@ -390,115 +177,259 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
                     items.push(ListItem::new(Line::from(spans)).style(style));
                 }
             }
+            SelectableItem::Spec {
+                project_index: proj_idx,
+                spec_index: spec_idx,
+            } => {
+                // Render spec row
+                if let Some(project) = app.projects.get(*proj_idx) {
+                    if let Some(spec) = project.specs.get(*spec_idx) {
+                        let spans = render_spec_row(app, spec);
+
+                        let style = if is_selected {
+                            Style::default()
+                                .bg(theme.selection_bg)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        };
+
+                        items.push(ListItem::new(Line::from(spans)).style(style));
+                    }
+                }
+            }
         }
     }
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Sync Sessions ({})", app.sessions.len())),
-    );
+    let title = format!(" Sync Projects ({} projects, {} specs) ", app.projects.len(), total_specs);
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
 
     f.render_widget(list, area);
 }
 
-fn draw_projects(f: &mut Frame, app: &App, area: Rect) {
-    let project_index_offset = 0; // Projects are now first
+/// Render a project header row with fold indicator, status, and stats
+fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Span<'static>> {
     let theme = &app.color_scheme;
 
-    let items: Vec<ListItem> = app
-        .projects
-        .iter()
-        .enumerate()
-        .map(|(i, project)| {
-            let status_icon = project.status_icon();
-            let is_active = project.is_active();
+    // Fold icon
+    let fold_icon = if project.folded { "▶" } else { "▼" };
 
-            let mut lines = Vec::new();
+    // Status icon (active if any spec is running)
+    let is_active = project.specs.iter().any(|s| s.is_running());
+    let status_icon = if is_active { "✓" } else { "○" };
+    let status_color = if is_active {
+        theme.status_running_fg
+    } else {
+        theme.status_paused_fg
+    };
 
-            let file_path = project.file.path.display().to_string();
-            let short_path = if let Ok(home) = std::env::var("HOME") {
-                if !home.is_empty() && file_path.starts_with(&home) {
-                    file_path.replace(&home, "~")
+    // Count running specs
+    let running_count = project.specs.iter().filter(|s| s.is_running()).count();
+    let total_count = project.specs.len();
+
+    // Count conflicts across all running specs
+    let conflict_count: usize = project.specs.iter()
+        .filter_map(|s| s.running_session.as_ref())
+        .map(|s| s.conflict_count())
+        .sum();
+
+    let mut spans = vec![
+        Span::styled(
+            format!("{} ", fold_icon),
+            Style::default().fg(theme.session_name_fg),
+        ),
+        Span::styled(
+            format!("{} ", status_icon),
+            Style::default().fg(status_color),
+        ),
+        Span::styled(
+            format!("{:<30}", project.file.display_name()),
+            Style::default()
+                .fg(theme.session_name_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+
+    // Add running status
+    if running_count == 0 {
+        spans.push(Span::styled(
+            "  Not running".to_string(),
+            Style::default().fg(theme.session_status_fg),
+        ));
+    } else if running_count == total_count {
+        spans.push(Span::styled(
+            "  Running".to_string(),
+            Style::default().fg(theme.session_status_fg),
+        ));
+    } else {
+        spans.push(Span::styled(
+            format!("  {}/{} running", running_count, total_count),
+            Style::default().fg(theme.session_status_fg),
+        ));
+    }
+
+    // Add conflict indicator if there are conflicts
+    if conflict_count > 0 {
+        spans.push(Span::raw("  ".to_string()));
+        spans.push(Span::styled(
+            format!("⚠ {} conflict{}", conflict_count, if conflict_count == 1 { "" } else { "s" }),
+            Style::default()
+                .fg(theme.status_paused_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    spans
+}
+
+/// Render a spec row with state indicator and details
+fn render_spec_row(app: &App, spec: &crate::project::SyncSpec) -> Vec<Span<'static>> {
+    let theme = &app.color_scheme;
+
+    let mut spans = vec![Span::raw("    ".to_string())]; // Indent for spec under project
+
+    match &spec.state {
+        SyncSpecState::NotRunning => {
+            // Not running: show ○ icon and "Not running" status
+            spans.push(Span::styled(
+                "○ ".to_string(),
+                Style::default().fg(theme.status_paused_fg),
+            ));
+            spans.push(Span::styled(
+                format!("{:<30}", spec.name),
+                Style::default().fg(theme.session_name_fg),
+            ));
+            spans.push(Span::styled(
+                "  Not running".to_string(),
+                Style::default().fg(theme.session_status_fg),
+            ));
+        }
+        SyncSpecState::RunningTwoWay | SyncSpecState::RunningPush => {
+            // Running: show session details
+            if let Some(session) = &spec.running_session {
+                let status_icon = if session.paused { "⏸" } else { "▶" };
+                let status_color = if session.paused {
+                    theme.status_paused_fg
                 } else {
-                    file_path
+                    theme.status_running_fg
+                };
+
+                spans.push(Span::styled(
+                    format!("{} ", status_icon),
+                    Style::default().fg(status_color),
+                ));
+
+                spans.push(Span::styled(
+                    format!("{:<30}", spec.name),
+                    Style::default()
+                        .fg(theme.session_name_fg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+
+                spans.push(Span::raw(" ".to_string()));
+
+                // Session status icon
+                spans.push(Span::styled(
+                    format!("{}  ", session.status_icon()),
+                    Style::default().fg(theme.session_status_fg),
+                ));
+
+                // Alpha endpoint
+                spans.push(Span::styled(
+                    session.alpha.status_icon().to_string(),
+                    Style::default().fg(if session.alpha.connected {
+                        theme.status_running_fg
+                    } else {
+                        theme.status_paused_fg
+                    }),
+                ));
+                spans.push(Span::styled(
+                    format!("{} ", session.alpha_display()),
+                    Style::default().fg(theme.session_alpha_fg),
+                ));
+
+                // Arrow (⇄ for two-way, ⬆ for push)
+                let arrow = if spec.state == SyncSpecState::RunningPush {
+                    "⬆ "
+                } else {
+                    "⇄ "
+                };
+                spans.push(Span::raw(arrow.to_string()));
+
+                // Beta endpoint
+                spans.push(Span::styled(
+                    session.beta.status_icon().to_string(),
+                    Style::default().fg(if session.beta.connected {
+                        theme.status_running_fg
+                    } else {
+                        theme.status_paused_fg
+                    }),
+                ));
+                spans.push(Span::styled(
+                    session.beta_display(),
+                    Style::default().fg(theme.session_beta_fg),
+                ));
+
+                // Conflict indicator
+                if session.has_conflicts() {
+                    spans.push(Span::raw(" ".to_string()));
+                    spans.push(Span::styled(
+                        format!(
+                            "⚠ {} conflict{}",
+                            session.conflict_count(),
+                            if session.conflict_count() == 1 { "" } else { "s" }
+                        ),
+                        Style::default()
+                            .fg(theme.status_paused_fg)
+                            .add_modifier(Modifier::BOLD),
+                    ));
                 }
-            } else {
-                file_path
-            };
-
-            let header = StyledText::new(theme)
-                .status_icon_owned(format!("{} ", status_icon), is_active)
-                .session_name_owned(project.file.display_name())
-                .text(" ")
-                .status_text_owned(format!("({})", short_path))
-                .build();
-            lines.push(header);
-
-            for session in &project.active_sessions {
-                let session_line = StyledText::new(theme)
-                    .text("  └─ ")
-                    .endpoint_alpha(&session.name)
-                    .text(": ")
-                    .status_text(&session.status)
-                    .build();
-                lines.push(session_line);
             }
+        }
+    }
 
-            if project.active_sessions.is_empty() {
-                let empty_line = StyledText::new(theme)
-                    .text("  ")
-                    .status_text("(no running sessions)")
-                    .build();
-                lines.push(empty_line);
-            }
-
-            let is_selected = project_index_offset + i == app.selected_index();
-            let style = if is_selected {
-                Style::default()
-                    .bg(theme.selection_bg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
-            ListItem::new(lines).style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Projects ({} files)", app.projects.len())),
-    );
-
-    f.render_widget(list, area);
+    spans
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    // Build status text: show selected session status if available, otherwise show status message
-    let (mut status_text, fg_color) = if let Some(session_idx) = app.get_selected_session_index() {
-        // Session is selected - show its status
-        if let Some(session) = app.sessions.get(session_idx) {
-            // Build detailed status: "Name: Status"
-            let mut parts = vec![session.name.clone(), ": ".to_string(), session.status_text().to_string()];
+    // Build status text: show selected spec status if available, otherwise show status message
+    let (mut status_text, fg_color) = if let Some((proj_idx, spec_idx)) = app.get_selected_spec() {
+        // Spec is selected - show its status
+        if let Some(project) = app.projects.get(proj_idx) {
+            if let Some(spec) = project.specs.get(spec_idx) {
+                if let Some(session) = &spec.running_session {
+                    // Build detailed status: "Name: Status"
+                    let mut parts = vec![session.name.clone(), ": ".to_string(), session.status_text().to_string()];
 
-            // Add progress percentage if available
-            if let Some(pct) = session.progress_percentage() {
-                parts.push(format!(" ({}%)", pct));
+                    // Add progress percentage if available
+                    if let Some(pct) = session.progress_percentage() {
+                        parts.push(format!(" ({}%)", pct));
+                    }
+
+                    // Add conflict count if any
+                    let conflict_count = session.conflict_count();
+                    if conflict_count > 0 {
+                        parts.push(format!(
+                            " | {} conflict{}",
+                            conflict_count,
+                            if conflict_count == 1 { "" } else { "s" }
+                        ));
+                    }
+
+                    (parts.join(""), app.color_scheme.status_message_fg)
+                } else {
+                    // Spec not running
+                    (format!("{}: Not running", spec.name), app.color_scheme.status_message_fg)
+                }
+            } else {
+                (
+                    app.status_message
+                        .as_ref()
+                        .map(|msg| msg.text().to_string())
+                        .unwrap_or_else(|| "Ready".to_string()),
+                    app.color_scheme.status_message_fg,
+                )
             }
-
-            // Add conflict count if any
-            let conflict_count = session.conflict_count();
-            if conflict_count > 0 {
-                parts.push(format!(
-                    " | {} conflict{}",
-                    conflict_count,
-                    if conflict_count == 1 { "" } else { "s" }
-                ));
-            }
-
-            (parts.join(""), app.color_scheme.status_message_fg)
         } else {
             (
                 app.status_message
@@ -509,7 +440,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             )
         }
     } else {
-        // No session selected - show status message
+        // No spec selected - show status message
         let text = app
             .status_message
             .as_ref()
@@ -543,27 +474,26 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
-    // Check if project is selected (from Projects panel or ProjectHeader in Sessions panel)
-    let is_project_selected = app.selected_index() < app.projects.len()
-        || app.get_selected_session_panel_project_index().is_some();
+    // Check if project is selected
+    let is_project_selected = app.selection.is_project_selected();
 
-    // Check if a session (not project header) is selected in sessions panel
-    let is_session_selected = app.get_selected_session_index().is_some();
+    // Check if a spec is selected
+    let is_spec_selected = app.selection.is_spec_selected();
 
     let mut help_bar = HelpBar::new(&app.color_scheme)
-        .item("↑/↓", "Nav")
-        .item("Tab", "Switch Area")
-        .item("m", "Mode");
+        .item("↑/↓/j/k", "Nav")
+        .item("h/l", "Fold")
+        .item("r", "Refresh");
 
-    if is_project_selected && !is_session_selected {
-        // Project-specific commands (either from Projects panel or ProjectHeader in Sessions panel)
+    if is_project_selected {
+        // Project-specific commands
         help_bar = help_bar
             .item("↵", "Edit")
             .item("s", "Start/Stop")
             .item("p", "Push")
             .item("Space", "Pause/Resume");
-    } else if is_session_selected {
-        // Session-specific commands
+    } else if is_spec_selected {
+        // Spec-specific commands
         help_bar = help_bar
             .item("Space", "Pause/Resume")
             .item("f", "Flush")
@@ -658,7 +588,7 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
         vertical: 1,
     });
 
-    if let Some(conflicts) = app.get_selected_session_conflicts() {
+    if let Some(conflicts) = app.get_selected_spec_conflicts() {
         if conflicts.is_empty() {
             let no_conflicts = Paragraph::new("No conflicts found")
                 .style(Style::default().fg(app.color_scheme.session_status_fg))

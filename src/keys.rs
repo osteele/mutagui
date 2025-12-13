@@ -137,12 +137,22 @@ pub async fn handle_key_event<B: Backend>(
             Ok(KeyAction::Quit)
         }
         KeyCode::Char('r') => Ok(KeyAction::Refresh),
-        KeyCode::Tab => {
-            app.toggle_focus_area();
-            Ok(KeyAction::Continue)
-        }
         KeyCode::Char('m') => {
             app.toggle_session_display();
+            Ok(KeyAction::Continue)
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            // Fold selected project
+            if let Some(proj_idx) = app.get_selected_project_index() {
+                app.toggle_project_fold(proj_idx);
+            }
+            Ok(KeyAction::Continue)
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            // Unfold selected project
+            if let Some(proj_idx) = app.get_selected_project_index() {
+                app.toggle_project_fold(proj_idx);
+            }
             Ok(KeyAction::Continue)
         }
         KeyCode::Enter => {
@@ -191,7 +201,7 @@ pub async fn handle_key_event<B: Backend>(
 
 /// Handle Enter key - edit selected project file.
 fn handle_enter_key<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
-    if let Some(project_idx) = app.get_effective_project_index() {
+    if let Some(project_idx) = app.get_selected_project_index() {
         if let Some(project) = app.projects.get(project_idx) {
             let editor = get_editor();
             let file_path = &project.file.path;
@@ -251,7 +261,7 @@ async fn handle_start_stop_project<B: Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
-    let operation_name = if app.selected_project_has_sessions() {
+    let operation_name = if app.selected_project_has_running_specs() {
         "Stopping project..."
     } else {
         "Starting project..."
@@ -269,14 +279,14 @@ async fn handle_start_stop_project<B: Backend>(
 
 /// Handle 'p' key - pause session or create push session.
 async fn handle_pause_or_push<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
-    if app.get_selected_session_index().is_some() {
-        // Individual session selected: pause it
+    if app.selection.is_spec_selected() {
+        // Individual spec selected: pause it
         app.pause_selected().await;
-    } else if app.get_effective_project_index().is_some() {
-        // Project selected (from either panel or session panel header): create push session
-        if !app.selected_project_has_sessions() {
+    } else if app.selection.is_project_selected() {
+        // Project selected: create push session
+        if !app.selected_project_has_running_specs() {
             // Count sessions to create for proper plural message
-            let session_count = if let Some(project_idx) = app.get_effective_project_index() {
+            let session_count = if let Some(project_idx) = app.get_selected_project_index() {
                 app.projects
                     .get(project_idx)
                     .map(|p| p.file.sessions.len())
@@ -298,21 +308,23 @@ async fn handle_pause_or_push<B: Backend>(app: &mut App, terminal: &mut Terminal
             app.blocking_op = None;
         } else {
             app.status_message = Some(StatusMessage::warning(
-                "Cannot push: project has active sessions. Stop the project first.",
+                "Cannot push: project has running specs. Stop the project first.",
             ));
         }
     }
     Ok(())
 }
 
-/// Handle space key - toggle pause for session or all project sessions.
+/// Handle space key - toggle pause for spec or all project specs.
 async fn handle_toggle_pause<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
-    // Check if operating on project (from either panel or header) vs single session
-    if app.get_effective_project_index().is_some() && app.get_selected_session_index().is_none() {
+    // Check if operating on project vs single spec
+    if app.selection.is_project_selected() {
         // Project selected: show blocking modal for pause/resume all
-        let has_running = if let Some(project_idx) = app.get_effective_project_index() {
+        let has_running = if let Some(project_idx) = app.get_selected_project_index() {
             if let Some(project) = app.projects.get(project_idx) {
-                project.active_sessions.iter().any(|s| !s.paused)
+                project.specs.iter()
+                    .filter_map(|spec| spec.running_session.as_ref())
+                    .any(|s| !s.paused)
             } else {
                 false
             }
@@ -321,9 +333,9 @@ async fn handle_toggle_pause<B: Backend>(app: &mut App, terminal: &mut Terminal<
         };
 
         let operation_name = if has_running {
-            "Pausing all sessions..."
+            "Pausing all specs..."
         } else {
-            "Resuming all sessions..."
+            "Resuming all specs..."
         };
 
         app.blocking_op = Some(BlockingOperation {
@@ -334,7 +346,7 @@ async fn handle_toggle_pause<B: Backend>(app: &mut App, terminal: &mut Terminal<
         app.toggle_pause_selected().await;
         app.blocking_op = None;
     } else {
-        // Single session: no modal needed (quick operation)
+        // Single spec: no modal needed (quick operation)
         app.toggle_pause_selected().await;
     }
     Ok(())

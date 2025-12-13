@@ -56,6 +56,57 @@ impl SessionDefinition {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncSpecState {
+    /// Spec defined but no session running
+    NotRunning,
+    /// Running as two-way sync
+    RunningTwoWay,
+    /// Running as one-way-replica (push)
+    RunningPush,
+}
+
+/// Represents a sync specification that may or may not be running
+#[derive(Debug, Clone)]
+pub struct SyncSpec {
+    /// Name of the sync spec (from project file key)
+    pub name: String,
+    /// The definition from the project file
+    #[allow(dead_code)]
+    pub definition: SessionDefinition,
+    /// Current materialization state
+    pub state: SyncSpecState,
+    /// Link to running session if materialized
+    pub running_session: Option<SyncSession>,
+}
+
+impl SyncSpec {
+    /// Check if this spec has a running session
+    pub fn is_running(&self) -> bool {
+        self.running_session.is_some()
+    }
+
+    /// Get conflicts from running session if any
+    pub fn conflicts(&self) -> Option<&Vec<crate::mutagen::Conflict>> {
+        self.running_session
+            .as_ref()
+            .map(|s| &s.conflicts)
+    }
+
+    /// Check if spec has conflicts
+    pub fn has_conflicts(&self) -> bool {
+        self.conflicts().map(|c| !c.is_empty()).unwrap_or(false)
+    }
+
+    /// Check if session is paused
+    pub fn is_paused(&self) -> bool {
+        self.running_session
+            .as_ref()
+            .map(|s| s.paused)
+            .unwrap_or(false)
+    }
+}
+
 /// Extract ignore patterns from a YAML value, handling multiple formats
 fn extract_patterns_from_value(value: &serde_yaml::Value, patterns: &mut Vec<String>) {
     match value {
@@ -178,12 +229,16 @@ fn extract_target_name(path: &Path) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct Project {
     pub file: ProjectFile,
-    pub active_sessions: Vec<SyncSession>,
+    /// All sync specs from project file (both running and not running)
+    pub specs: Vec<SyncSpec>,
+    /// Whether project tree is folded (collapsed)
+    pub folded: bool,
 }
 
 impl Project {
+    /// Check if project has any running sessions
     pub fn is_active(&self) -> bool {
-        !self.active_sessions.is_empty()
+        self.specs.iter().any(|s| s.is_running())
     }
 
     pub fn status_icon(&self) -> &str {
@@ -192,6 +247,54 @@ impl Project {
         } else {
             "○"
         }
+    }
+
+    /// Check if project should auto-unfold
+    #[allow(dead_code)]
+    pub fn should_auto_unfold(&self) -> bool {
+        // Auto-unfold if any spec has conflicts
+        if self.specs.iter().any(|s| s.has_conflicts()) {
+            return true;
+        }
+
+        // Auto-unfold if specs are in different states (some running, some not)
+        let running_count = self.specs.iter().filter(|s| s.is_running()).count();
+        if running_count > 0 && running_count < self.specs.len() {
+            return true;
+        }
+
+        // Auto-unfold if running specs have different modes
+        let two_way_count = self
+            .specs
+            .iter()
+            .filter(|s| s.state == SyncSpecState::RunningTwoWay)
+            .count();
+        let push_count = self
+            .specs
+            .iter()
+            .filter(|s| s.state == SyncSpecState::RunningPush)
+            .count();
+        if two_way_count > 0 && push_count > 0 {
+            return true;
+        }
+
+        false
+    }
+
+    /// Get specs that have different pause states
+    #[allow(dead_code)]
+    pub fn has_mixed_pause_states(&self) -> bool {
+        let paused_count = self
+            .specs
+            .iter()
+            .filter(|s| s.is_running() && s.is_paused())
+            .count();
+        let running_count = self
+            .specs
+            .iter()
+            .filter(|s| s.is_running() && !s.is_paused())
+            .count();
+        paused_count > 0 && running_count > 0
     }
 }
 
@@ -372,63 +475,99 @@ fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
     paths
 }
 
+/// Build sync specs from project file and running sessions
+pub fn build_sync_specs(
+    project_file: &ProjectFile,
+    sessions: &[SyncSession],
+) -> Vec<SyncSpec> {
+    let mut specs = Vec::new();
+
+    for (name, definition) in &project_file.sessions {
+        // Find matching running session(s)
+        let two_way_session = sessions.iter().find(|s| {
+            s.name == *name && s.mode.as_deref() != Some("one-way-replica")
+        });
+
+        let push_session = sessions.iter().find(|s| {
+            s.name == format!("{}-push", name)
+                && s.mode.as_deref() == Some("one-way-replica")
+        });
+
+        // Determine state and attach session
+        let (state, running_session) = if let Some(session) = two_way_session {
+            (SyncSpecState::RunningTwoWay, Some(session.clone()))
+        } else if let Some(session) = push_session {
+            (SyncSpecState::RunningPush, Some(session.clone()))
+        } else {
+            (SyncSpecState::NotRunning, None)
+        };
+
+        specs.push(SyncSpec {
+            name: name.clone(),
+            definition: definition.clone(),
+            state,
+            running_session,
+        });
+    }
+
+    // Sort alphabetically
+    specs.sort_by(|a, b| a.name.cmp(&b.name));
+    specs
+}
+
+/// Helper to check if specs should auto-unfold (used during construction)
+fn should_auto_unfold_specs(specs: &[SyncSpec]) -> bool {
+    // Auto-unfold if any spec has conflicts
+    if specs.iter().any(|s| s.has_conflicts()) {
+        return true;
+    }
+
+    // Auto-unfold if specs are in different states (some running, some not)
+    let running_count = specs.iter().filter(|s| s.is_running()).count();
+    if running_count > 0 && running_count < specs.len() {
+        return true;
+    }
+
+    // Auto-unfold if running specs have different modes
+    let two_way_count = specs
+        .iter()
+        .filter(|s| s.state == SyncSpecState::RunningTwoWay)
+        .count();
+    let push_count = specs
+        .iter()
+        .filter(|s| s.state == SyncSpecState::RunningPush)
+        .count();
+    if two_way_count > 0 && push_count > 0 {
+        return true;
+    }
+
+    false
+}
+
 pub fn correlate_projects_with_sessions(
     project_files: Vec<ProjectFile>,
     sessions: &[SyncSession],
 ) -> Vec<Project> {
-    let mut projects = Vec::new();
+    project_files
+        .into_iter()
+        .map(|file| {
+            let specs = build_sync_specs(&file, sessions);
+            let should_unfold = should_auto_unfold_specs(&specs);
 
-    for file in project_files {
-        let mut active_sessions = Vec::new();
-
-        for session in sessions {
-            // Check if session name matches a key in the project file
-            // Also check if session name is a push variant (ends with "-push") of a project session
-            let session_name_matches = file.sessions.contains_key(&session.name)
-                || (session.name.ends_with("-push")
-                    && file
-                        .sessions
-                        .contains_key(&session.name[..session.name.len() - 5]));
-
-            // Normalize session paths once for efficiency
-            // Use display_path() to include host prefix (e.g., "cool30:/path") for remote endpoints
-            let session_alpha_normalized = normalize_path(&session.alpha.display_path());
-            let session_beta_normalized = normalize_path(&session.beta.display_path());
-
-            // Check if any session definition in the project file matches this running session
-            let alpha_path_matches = file.sessions.values().any(|def| {
-                let def_alpha_normalized = normalize_path(&def.alpha);
-                // Use exact equality now that paths are canonicalized
-                def_alpha_normalized == session_alpha_normalized
-            });
-
-            let beta_path_matches = file.sessions.values().any(|def| {
-                let def_beta_normalized = normalize_path(&def.beta);
-                // Use exact equality now that paths are canonicalized
-                def_beta_normalized == session_beta_normalized
-            });
-
-            if session_name_matches || (alpha_path_matches && beta_path_matches) {
-                active_sessions.push(session.clone());
+            Project {
+                file,
+                specs,
+                folded: !should_unfold, // Start unfolded if auto-unfold conditions met
             }
-        }
-
-        // Sort active sessions alphabetically by name
-        active_sessions.sort_by(|a, b| a.name.cmp(&b.name));
-
-        projects.push(Project {
-            file,
-            active_sessions,
-        });
-    }
-
-    projects
+        })
+        .collect()
 }
 
 /// Normalizes a path for comparison by resolving it to an absolute canonical path.
 /// Handles relative paths, strips trailing slashes, and resolves symlinks.
 /// Returns the original path string if canonicalization fails (e.g., for remote paths).
 #[cfg_attr(test, allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn normalize_path(path: &str) -> String {
     use crate::endpoint::EndpointAddress;
 
@@ -914,8 +1053,10 @@ sync:
         let projects = correlate_projects_with_sessions(vec![project_file], &[running_session]);
 
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].active_sessions.len(), 1);
-        assert_eq!(projects[0].active_sessions[0].name, "my-session");
+        assert_eq!(projects[0].specs.len(), 1);
+        assert_eq!(projects[0].specs[0].name, "my-session");
+        assert!(projects[0].specs[0].is_running());
+        assert_eq!(projects[0].specs[0].state, SyncSpecState::RunningTwoWay);
     }
 
     #[test]
@@ -938,15 +1079,18 @@ sync:
             defaults: None,
         };
 
-        // Push sessions have "-push" suffix
-        let running_session =
+        // Push sessions have "-push" suffix and mode "one-way-replica"
+        let mut running_session =
             make_test_session("my-session-push", "/different/local", "/different/remote");
+        running_session.mode = Some("one-way-replica".to_string());
 
         let projects = correlate_projects_with_sessions(vec![project_file], &[running_session]);
 
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].active_sessions.len(), 1);
-        assert_eq!(projects[0].active_sessions[0].name, "my-session-push");
+        assert_eq!(projects[0].specs.len(), 1);
+        assert_eq!(projects[0].specs[0].name, "my-session");
+        assert!(projects[0].specs[0].is_running());
+        assert_eq!(projects[0].specs[0].state, SyncSpecState::RunningPush);
     }
 
     #[test]
@@ -976,7 +1120,10 @@ sync:
         let projects = correlate_projects_with_sessions(vec![project_file], &[running_session]);
 
         assert_eq!(projects.len(), 1);
-        assert!(projects[0].active_sessions.is_empty());
+        assert_eq!(projects[0].specs.len(), 1);
+        assert_eq!(projects[0].specs[0].name, "project-session");
+        assert!(!projects[0].specs[0].is_running());
+        assert_eq!(projects[0].specs[0].state, SyncSpecState::NotRunning);
     }
 
     #[test]
@@ -1015,15 +1162,28 @@ sync:
 
         let projects = correlate_projects_with_sessions(vec![project_file], &sessions);
 
-        assert_eq!(projects[0].active_sessions.len(), 2);
-        assert_eq!(projects[0].active_sessions[0].name, "alpha");
-        assert_eq!(projects[0].active_sessions[1].name, "zebra");
+        assert_eq!(projects[0].specs.len(), 2);
+        assert_eq!(projects[0].specs[0].name, "alpha");
+        assert_eq!(projects[0].specs[1].name, "zebra");
     }
 
     // ============ Project tests ============
 
     #[test]
     fn test_project_is_active() {
+        let session = make_test_session("test", "/local", "/remote");
+        let spec = SyncSpec {
+            name: "test".to_string(),
+            definition: SessionDefinition {
+                alpha: "/local".to_string(),
+                beta: "server:/remote".to_string(),
+                mode: None,
+                ignore: None,
+            },
+            state: SyncSpecState::RunningTwoWay,
+            running_session: Some(session),
+        };
+
         let project = Project {
             file: ProjectFile {
                 path: PathBuf::from("/test/mutagen.yml"),
@@ -1031,13 +1191,26 @@ sync:
                 sessions: HashMap::new(),
                 defaults: None,
             },
-            active_sessions: vec![make_test_session("test", "/local", "/remote")],
+            specs: vec![spec],
+            folded: false,
         };
         assert!(project.is_active());
     }
 
     #[test]
     fn test_project_is_inactive() {
+        let spec = SyncSpec {
+            name: "test".to_string(),
+            definition: SessionDefinition {
+                alpha: "/local".to_string(),
+                beta: "server:/remote".to_string(),
+                mode: None,
+                ignore: None,
+            },
+            state: SyncSpecState::NotRunning,
+            running_session: None,
+        };
+
         let project = Project {
             file: ProjectFile {
                 path: PathBuf::from("/test/mutagen.yml"),
@@ -1045,13 +1218,26 @@ sync:
                 sessions: HashMap::new(),
                 defaults: None,
             },
-            active_sessions: vec![],
+            specs: vec![spec],
+            folded: false,
         };
         assert!(!project.is_active());
     }
 
     #[test]
     fn test_project_status_icon() {
+        let running_spec = SyncSpec {
+            name: "test".to_string(),
+            definition: SessionDefinition {
+                alpha: "/local".to_string(),
+                beta: "server:/remote".to_string(),
+                mode: None,
+                ignore: None,
+            },
+            state: SyncSpecState::RunningTwoWay,
+            running_session: Some(make_test_session("test", "/local", "/remote")),
+        };
+
         let active_project = Project {
             file: ProjectFile {
                 path: PathBuf::from("/test/mutagen.yml"),
@@ -1059,9 +1245,22 @@ sync:
                 sessions: HashMap::new(),
                 defaults: None,
             },
-            active_sessions: vec![make_test_session("test", "/local", "/remote")],
+            specs: vec![running_spec],
+            folded: false,
         };
         assert_eq!(active_project.status_icon(), "✓");
+
+        let not_running_spec = SyncSpec {
+            name: "test".to_string(),
+            definition: SessionDefinition {
+                alpha: "/local".to_string(),
+                beta: "server:/remote".to_string(),
+                mode: None,
+                ignore: None,
+            },
+            state: SyncSpecState::NotRunning,
+            running_session: None,
+        };
 
         let inactive_project = Project {
             file: ProjectFile {
@@ -1070,7 +1269,8 @@ sync:
                 sessions: HashMap::new(),
                 defaults: None,
             },
-            active_sessions: vec![],
+            specs: vec![not_running_spec],
+            folded: false,
         };
         assert_eq!(inactive_project.status_icon(), "○");
     }
