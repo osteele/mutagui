@@ -1,6 +1,6 @@
 use crate::app::App;
-use crate::selection::SelectableItem;
 use crate::project::SyncSpecState;
+use crate::selection::SelectableItem;
 use crate::widgets::{HelpBar, StyledText};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -105,6 +105,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_conflict_detail(f, app);
     }
 
+    // Draw help screen overlay if viewing help
+    if app.viewing_help {
+        draw_help_screen(f, app);
+    }
+
     // Draw blocking operation modal if one is active
     if let Some(blocking_op) = &app.blocking_op {
         draw_blocking_modal(f, app, blocking_op);
@@ -184,7 +189,7 @@ fn draw_unified_panel(f: &mut Frame, app: &App, area: Rect) {
                 // Render spec row
                 if let Some(project) = app.projects.get(*proj_idx) {
                     if let Some(spec) = project.specs.get(*spec_idx) {
-                        let spans = render_spec_row(app, spec);
+                        let spans = render_spec_row(app, project, spec);
 
                         let style = if is_selected {
                             Style::default()
@@ -201,7 +206,11 @@ fn draw_unified_panel(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let title = format!(" Sync Projects ({} projects, {} specs) ", app.projects.len(), total_specs);
+    let title = format!(
+        " Sync Projects ({} projects, {} specs) ",
+        app.projects.len(),
+        total_specs
+    );
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
 
     f.render_widget(list, area);
@@ -228,12 +237,16 @@ fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Sp
     let total_count = project.specs.len();
 
     // Count push mode specs
-    let push_count = project.specs.iter()
+    let push_count = project
+        .specs
+        .iter()
         .filter(|s| s.state == crate::project::SyncSpecState::RunningPush)
         .count();
 
     // Count conflicts across all running specs
-    let conflict_count: usize = project.specs.iter()
+    let conflict_count: usize = project
+        .specs
+        .iter()
         .filter_map(|s| s.running_session.as_ref())
         .map(|s| s.conflict_count())
         .sum();
@@ -277,7 +290,10 @@ fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Sp
         ));
     } else {
         let status_text = if push_count > 0 {
-            format!("  {}/{} running ({} push)", running_count, total_count, push_count)
+            format!(
+                "  {}/{} running ({} push)",
+                running_count, total_count, push_count
+            )
         } else {
             format!("  {}/{} running", running_count, total_count)
         };
@@ -291,7 +307,11 @@ fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Sp
     if conflict_count > 0 {
         spans.push(Span::raw("  ".to_string()));
         spans.push(Span::styled(
-            format!("⚠ {} conflict{}", conflict_count, if conflict_count == 1 { "" } else { "s" }),
+            format!(
+                "⚠ {} conflict{}",
+                conflict_count,
+                if conflict_count == 1 { "" } else { "s" }
+            ),
             Style::default()
                 .fg(theme.status_paused_fg)
                 .add_modifier(Modifier::BOLD),
@@ -302,26 +322,51 @@ fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Sp
 }
 
 /// Render a spec row with state indicator and details
-fn render_spec_row(app: &App, spec: &crate::project::SyncSpec) -> Vec<Span<'static>> {
+fn render_spec_row(
+    app: &App,
+    project: &crate::project::Project,
+    spec: &crate::project::SyncSpec,
+) -> Vec<Span<'static>> {
     let theme = &app.color_scheme;
 
     let mut spans = vec![Span::raw("    ".to_string())]; // Indent for spec under project
 
     match &spec.state {
         SyncSpecState::NotRunning => {
-            // Not running: show ○ icon and "Not running" status
+            // Not running: show ○ icon and session definition endpoints
             spans.push(Span::styled(
                 "○ ".to_string(),
                 Style::default().fg(theme.status_paused_fg),
             ));
             spans.push(Span::styled(
-                format!("{:<30}", spec.name),
+                format!("{:<36}", spec.name),
                 Style::default().fg(theme.session_name_fg),
             ));
-            spans.push(Span::styled(
-                "  Not running".to_string(),
-                Style::default().fg(theme.session_status_fg),
-            ));
+            spans.push(Span::raw(" ".to_string()));
+
+            // Look up session definition from project file to show endpoints
+            if let Some(session_def) = project.file.sessions.get(&spec.name) {
+                // Alpha endpoint (no status icon since not running)
+                spans.push(Span::styled(
+                    format!("{} ", apply_tilde(&session_def.alpha)),
+                    Style::default().fg(theme.session_alpha_fg),
+                ));
+
+                // Arrow
+                spans.push(Span::raw("⇄ ".to_string()));
+
+                // Beta endpoint
+                spans.push(Span::styled(
+                    apply_tilde(&session_def.beta),
+                    Style::default().fg(theme.session_beta_fg),
+                ));
+            } else {
+                // Fallback if session definition not found
+                spans.push(Span::styled(
+                    "Not running".to_string(),
+                    Style::default().fg(theme.session_status_fg),
+                ));
+            }
         }
         SyncSpecState::RunningTwoWay | SyncSpecState::RunningPush => {
             // Running: show session details
@@ -406,7 +451,11 @@ fn render_spec_row(app: &App, spec: &crate::project::SyncSpec) -> Vec<Span<'stat
                         format!(
                             "⚠ {} conflict{}",
                             session.conflict_count(),
-                            if session.conflict_count() == 1 { "" } else { "s" }
+                            if session.conflict_count() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
                         ),
                         Style::default()
                             .fg(theme.status_paused_fg)
@@ -428,7 +477,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             if let Some(spec) = project.specs.get(spec_idx) {
                 if let Some(session) = &spec.running_session {
                     // Build detailed status: "Name: Status"
-                    let mut parts = vec![session.name.clone(), ": ".to_string(), session.status_text().to_string()];
+                    let mut parts = vec![
+                        session.name.clone(),
+                        ": ".to_string(),
+                        session.status_text().to_string(),
+                    ];
 
                     // Add progress percentage if available
                     if let Some(pct) = session.progress_percentage() {
@@ -447,8 +500,19 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
                     (parts.join(""), app.color_scheme.status_message_fg)
                 } else {
-                    // Spec not running
-                    (format!("{}: Not running", spec.name), app.color_scheme.status_message_fg)
+                    // Spec not running - show session definition endpoints
+                    let mut parts = vec![format!("{}: Not running", spec.name)];
+
+                    // Look up session definition to show what would be synced
+                    if let Some(session_def) = project.file.sessions.get(&spec.name) {
+                        parts.push(format!(
+                            "\nAlpha: {}\nBeta:  {}",
+                            apply_tilde(&session_def.alpha),
+                            apply_tilde(&session_def.beta)
+                        ));
+                    }
+
+                    (parts.join(""), app.color_scheme.status_message_fg)
                 }
             } else {
                 (
@@ -468,8 +532,46 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                 app.color_scheme.status_message_fg,
             )
         }
+    } else if let Some(project_idx) = app.get_selected_project_index() {
+        // Project selected - show status message if important, otherwise project info
+        // Important messages: errors, warnings, or operation results (not "Sessions refreshed")
+        let has_important_status = app.status_message.as_ref().map_or(false, |msg| {
+            matches!(
+                msg,
+                crate::app::StatusMessage::Error(_) | crate::app::StatusMessage::Warning(_)
+            ) || (matches!(msg, crate::app::StatusMessage::Info(text) if text != "Sessions refreshed"))
+        });
+
+        if has_important_status {
+            let msg = app.status_message.as_ref().unwrap();
+            let color = match msg {
+                crate::app::StatusMessage::Error(_) => app.color_scheme.status_error_fg,
+                crate::app::StatusMessage::Warning(_) => app.color_scheme.status_paused_fg,
+                crate::app::StatusMessage::Info(_) => app.color_scheme.status_message_fg,
+            };
+            (msg.text().to_string(), color)
+        } else if let Some(project) = app.projects.get(project_idx) {
+            let total_specs = project.specs.len();
+            let running_specs = project.specs.iter().filter(|s| s.is_running()).count();
+            let text = format!(
+                "{}: {} spec{}, {} running",
+                project.file.display_name(),
+                total_specs,
+                if total_specs == 1 { "" } else { "s" },
+                running_specs
+            );
+            (text, app.color_scheme.status_message_fg)
+        } else {
+            (
+                app.status_message
+                    .as_ref()
+                    .map(|msg| msg.text().to_string())
+                    .unwrap_or_else(|| "Ready".to_string()),
+                app.color_scheme.status_message_fg,
+            )
+        }
     } else {
-        // No spec selected - show status message
+        // Nothing selected - show status message
         let text = app
             .status_message
             .as_ref()
@@ -512,26 +614,30 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let mut help_bar = HelpBar::new(&app.color_scheme)
         .item("↑/↓/j/k", "Nav")
         .item("h/l/↵", "Fold")
-        .item("r", "Refresh");
+        .item("r", "Refresh")
+        .item("?", "Help");
 
     if is_project_selected {
         // Project-specific commands
         help_bar = help_bar
             .item("e", "Edit")
-            .item("s", "Start/Stop")
+            .item("s", "Start")
+            .item("t", "Terminate")
+            .item("f", "Flush")
             .item("p", "Push")
             .item("Space", "Pause/Resume");
     } else if is_spec_selected {
         // Spec-specific commands
         help_bar = help_bar
+            .item("s", "Start")
+            .item("t", "Terminate")
+            .item("f", "Flush")
             .item("p", "Push")
             .item("Space", "Pause/Resume")
-            .item("f", "Flush")
-            .item("t", "Terminate")
             .item("c", "Conflicts");
     }
 
-    // Common commands
+    // Common commands at end
     help_bar = help_bar.item("q", "Quit");
 
     let help = Paragraph::new(help_bar.build())
@@ -575,8 +681,15 @@ fn draw_blocking_modal(f: &mut Frame, app: &App, blocking_op: &crate::app::Block
         vertical: 1,
     });
 
-    // Static hourglass indicator (spinner won't animate since we only draw once)
-    let message = format!("⏳ {}\n\nPlease wait...", blocking_op.message);
+    // Build message with optional progress indicator
+    let message = if let (Some(current), Some(total)) = (blocking_op.current, blocking_op.total) {
+        format!(
+            "⏳ {}\n\nProgress: {} / {}\n\nPlease wait...",
+            blocking_op.message, current, total
+        )
+    } else {
+        format!("⏳ {}\n\nPlease wait...", blocking_op.message)
+    };
 
     let paragraph = Paragraph::new(message)
         .alignment(Alignment::Center)
@@ -726,4 +839,365 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
             .alignment(Alignment::Center);
         f.render_widget(error, inner_area);
     }
+}
+
+fn draw_help_screen(f: &mut Frame, app: &App) {
+    use ratatui::layout::{Alignment, Margin};
+    use ratatui::widgets::Clear;
+
+    // Create a centered overlay area (85% width, 90% height)
+    let area = f.area();
+    let overlay_width = (area.width as f32 * 0.85) as u16;
+    let overlay_height = (area.height as f32 * 0.90) as u16;
+    let overlay_x = (area.width - overlay_width) / 2;
+    let overlay_y = (area.height - overlay_height) / 2;
+
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_width,
+        height: overlay_height,
+    };
+
+    // Clear the background (prevents transparency)
+    f.render_widget(Clear, overlay_area);
+
+    // Draw the overlay block with background
+    let overlay_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.color_scheme.help_key_fg))
+        .title(" Mutagen TUI - Keyboard Commands (press '?' to close) ")
+        .title_alignment(Alignment::Center)
+        .style(Style::default().bg(app.color_scheme.selection_bg));
+
+    f.render_widget(overlay_block, overlay_area);
+
+    // Draw help content inside the overlay
+    let inner_area = overlay_area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+
+    let theme = &app.color_scheme;
+
+    let help_lines = vec![
+        Line::from(vec![Span::styled(
+            "NAVIGATION",
+            Style::default()
+                .fg(theme.header_fg)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  ↑/k, ↓/j", Style::default().fg(theme.help_key_fg)),
+            Span::raw("        "),
+            Span::styled(
+                "Move selection up/down",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  h/←, l/→/↵", Style::default().fg(theme.help_key_fg)),
+            Span::raw("    "),
+            Span::styled(
+                "Fold/unfold project",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "GLOBAL ACTIONS",
+            Style::default()
+                .fg(theme.header_fg)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  r", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Refresh session list and projects",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  m", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Toggle display mode (paths vs. last sync time)",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  q, Ctrl-C", Style::default().fg(theme.help_key_fg)),
+            Span::raw("     "),
+            Span::styled("Quit application", Style::default().fg(theme.help_text_fg)),
+        ]),
+        Line::from(vec![
+            Span::styled("  ?", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Toggle this help screen",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "PROJECT ACTIONS ",
+                Style::default()
+                    .fg(theme.header_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "(when project selected)",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  e", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Edit project configuration file",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  s", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Start all specs in project",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  t", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Terminate all specs in project",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  f", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Flush all specs in project",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  p", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Create push sessions for all specs",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Space", Style::default().fg(theme.help_key_fg)),
+            Span::raw("         "),
+            Span::styled(
+                "Pause/resume all running specs",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  u", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Resume all paused specs",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "SPEC ACTIONS ",
+                Style::default()
+                    .fg(theme.header_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "(when individual spec selected)",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  s", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled("Start this spec", Style::default().fg(theme.help_text_fg)),
+        ]),
+        Line::from(vec![
+            Span::styled("  t", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Terminate this spec",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  f", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled("Flush this spec", Style::default().fg(theme.help_text_fg)),
+        ]),
+        Line::from(vec![
+            Span::styled("  p", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Create push session (replaces two-way if running)",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Space", Style::default().fg(theme.help_key_fg)),
+            Span::raw("         "),
+            Span::styled("Pause/resume spec", Style::default().fg(theme.help_text_fg)),
+        ]),
+        Line::from(vec![
+            Span::styled("  u", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "Resume paused spec",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  c", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "View conflicts (shows overlay with conflict details)",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "VISUAL INDICATORS",
+            Style::default()
+                .fg(theme.header_fg)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  ▼/▶", Style::default().fg(theme.help_key_fg)),
+            Span::raw("           "),
+            Span::styled(
+                "Project expanded/collapsed",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ✓/○", Style::default().fg(theme.help_key_fg)),
+            Span::raw("           "),
+            Span::styled(
+                "Project active/inactive",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ▶/⏸/○", Style::default().fg(theme.help_key_fg)),
+            Span::raw("        "),
+            Span::styled(
+                "Spec running/paused/not running",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ⇄/⬆", Style::default().fg(theme.help_key_fg)),
+            Span::raw("          "),
+            Span::styled(
+                "Two-way sync / Push mode (one-way)",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  👁📦⚖⏳💾⛔", Style::default().fg(theme.help_key_fg)),
+            Span::raw("    "),
+            Span::styled("Session status", Style::default().fg(theme.help_text_fg)),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "(watching/staging/reconciling/transitioning/saving/halted)",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ✓⟳⊗", Style::default().fg(theme.help_key_fg)),
+            Span::raw("          "),
+            Span::styled(
+                "Endpoint connected/scanning/disconnected",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ⚠ X conflicts", Style::default().fg(theme.help_key_fg)),
+            Span::raw(" "),
+            Span::styled(
+                "Number of conflicts detected",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
+    ];
+
+    let help_text = Paragraph::new(help_lines)
+        .style(Style::default().bg(app.color_scheme.selection_bg))
+        .wrap(Wrap { trim: false })
+        .scroll((0, 0));
+
+    f.render_widget(help_text, inner_area);
+}
+
+/// Apply tilde abbreviation to a path string
+/// Replaces /Users/username with ~ or ~username depending on current user
+fn apply_tilde(endpoint: &str) -> String {
+    // Handle SSH-style endpoints (user@host:path or host:path)
+    if let Some(colon_pos) = endpoint.rfind(':') {
+        let (prefix, path) = endpoint.split_at(colon_pos + 1);
+        return format!("{}{}", prefix, apply_tilde_to_path(path));
+    }
+
+    // Local path
+    apply_tilde_to_path(endpoint)
+}
+
+/// Apply tilde abbreviation to just the path component
+fn apply_tilde_to_path(path: &str) -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() && path.starts_with(&home) {
+            return path.replacen(&home, "~", 1);
+        }
+    }
+
+    // Handle other users' home directories (/Users/otheruser -> ~otheruser)
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(stripped) = path.strip_prefix("/Users/") {
+            if let Some(slash_pos) = stripped.find('/') {
+                let username = &stripped[..slash_pos];
+                let rest = &stripped[slash_pos..];
+                return format!("~{}{}", username, rest);
+            } else {
+                // Just /Users/username with no trailing path
+                return format!("~{}", stripped);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(stripped) = path.strip_prefix("/home/") {
+            if let Some(slash_pos) = stripped.find('/') {
+                let username = &stripped[..slash_pos];
+                let rest = &stripped[slash_pos..];
+                return format!("~{}{}", username, rest);
+            } else {
+                // Just /home/username with no trailing path
+                return format!("~{}", stripped);
+            }
+        }
+    }
+
+    path.to_string()
 }

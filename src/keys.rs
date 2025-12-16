@@ -5,16 +5,33 @@
 
 use anyhow::Result;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::Backend, Terminal};
 use std::io;
 use std::process::Command;
+use std::time::Duration;
 
 use crate::app::{App, BlockingOperation, StatusMessage};
 use crate::ui;
+
+/// Flush any pending keyboard events from the event queue.
+/// This is important after blocking operations to prevent queued keys
+/// from being processed unexpectedly.
+fn flush_event_queue() {
+    while event::poll(Duration::from_millis(0)).unwrap_or(false) {
+        let _ = event::read();
+    }
+}
+
+/// Clean up after a blocking operation.
+/// Clears the modal and flushes any queued key events.
+fn finish_blocking_op(app: &mut App) {
+    app.blocking_op = None;
+    flush_event_queue();
+}
 
 /// Result of handling a key event.
 pub enum KeyAction {
@@ -131,6 +148,18 @@ pub async fn handle_key_event<B: Backend>(
         return Ok(KeyAction::Quit);
     }
 
+    // Handle Escape to close overlays (help or conflict view)
+    if key.code == KeyCode::Esc {
+        if app.viewing_help {
+            app.toggle_help_view();
+            return Ok(KeyAction::Continue);
+        }
+        if app.viewing_conflicts {
+            app.toggle_conflict_view();
+            return Ok(KeyAction::Continue);
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') => {
             app.quit();
@@ -160,15 +189,23 @@ pub async fn handle_key_event<B: Backend>(
             Ok(KeyAction::Refresh)
         }
         KeyCode::Char('s') => {
-            handle_start_stop_project(app, terminal).await?;
+            handle_start(app, terminal).await?;
+            Ok(KeyAction::Refresh)
+        }
+        KeyCode::Char('t') => {
+            handle_terminate(app, terminal).await?;
+            Ok(KeyAction::Refresh)
+        }
+        KeyCode::Char('f') => {
+            handle_flush(app, terminal).await?;
+            Ok(KeyAction::Refresh)
+        }
+        KeyCode::Char('u') => {
+            handle_resume(app, terminal).await?;
             Ok(KeyAction::Refresh)
         }
         KeyCode::Char('p') => {
             handle_pause_or_push(app, terminal).await?;
-            Ok(KeyAction::Refresh)
-        }
-        KeyCode::Char('u') => {
-            app.resume_selected().await;
             Ok(KeyAction::Refresh)
         }
         KeyCode::Char(' ') => {
@@ -183,16 +220,12 @@ pub async fn handle_key_event<B: Backend>(
             app.select_next();
             Ok(KeyAction::Continue)
         }
-        KeyCode::Char('t') => {
-            app.terminate_selected().await;
-            Ok(KeyAction::Continue)
-        }
-        KeyCode::Char('f') => {
-            app.flush_selected().await;
-            Ok(KeyAction::Refresh)
-        }
         KeyCode::Char('c') => {
             app.toggle_conflict_view();
+            Ok(KeyAction::Continue)
+        }
+        KeyCode::Char('?') => {
+            app.toggle_help_view();
             Ok(KeyAction::Continue)
         }
         _ => Ok(KeyAction::Continue),
@@ -268,24 +301,86 @@ fn handle_enter_key<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Re
     Ok(())
 }
 
-/// Handle 's' key - start/stop project.
-async fn handle_start_stop_project<B: Backend>(
-    app: &mut App,
-    terminal: &mut Terminal<B>,
-) -> Result<()> {
-    let operation_name = if app.selected_project_has_running_specs() {
-        "Stopping project..."
+/// Handle 's' key - start project or spec.
+async fn handle_start<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
+    if app.selection.is_spec_selected() {
+        // Spec selected: start just this spec (no modal needed - quick operation)
+        app.start_selected_spec().await;
     } else {
-        "Starting project..."
-    };
+        // Project selected: start all specs (show blocking modal)
+        app.blocking_op = Some(BlockingOperation {
+            message: "Starting project...".to_string(),
+            current: None,
+            total: None,
+        });
+        terminal.draw(|f| ui::draw(f, app))?;
 
-    app.blocking_op = Some(BlockingOperation {
-        message: operation_name.to_string(),
-    });
-    terminal.draw(|f| ui::draw(f, app))?;
+        app.start_selected_project().await;
+        finish_blocking_op(app);
+    }
+    Ok(())
+}
 
-    app.toggle_selected_project().await;
-    app.blocking_op = None;
+/// Handle 't' key - terminate project or spec.
+async fn handle_terminate<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
+    if app.selection.is_spec_selected() {
+        // Spec selected: terminate just this spec (no modal - quick operation)
+        app.terminate_selected().await;
+    } else {
+        // Project selected: terminate all specs (show blocking modal)
+        app.blocking_op = Some(BlockingOperation {
+            message: "Terminating project...".to_string(),
+            current: None,
+            total: None,
+        });
+        terminal.draw(|f| ui::draw(f, app))?;
+
+        let result = app.terminate_selected_project(terminal).await;
+        finish_blocking_op(app);
+        result?;
+    }
+    Ok(())
+}
+
+/// Handle 'f' key - flush project or spec.
+async fn handle_flush<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
+    if app.selection.is_spec_selected() {
+        // Spec selected: flush just this spec (no modal)
+        app.flush_selected().await;
+    } else {
+        // Project selected: flush all specs (show blocking modal)
+        app.blocking_op = Some(BlockingOperation {
+            message: "Flushing project...".to_string(),
+            current: None,
+            total: None,
+        });
+        terminal.draw(|f| ui::draw(f, app))?;
+
+        let result = app.flush_selected_project(terminal).await;
+        finish_blocking_op(app);
+        result?;
+    }
+    Ok(())
+}
+
+/// Handle 'u' key - resume project or spec.
+async fn handle_resume<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
+    if app.selection.is_spec_selected() {
+        // Spec selected: resume just this spec (no modal)
+        app.resume_selected().await;
+    } else {
+        // Project selected: resume all specs (show blocking modal)
+        app.blocking_op = Some(BlockingOperation {
+            message: "Resuming project...".to_string(),
+            current: None,
+            total: None,
+        });
+        terminal.draw(|f| ui::draw(f, app))?;
+
+        let result = app.resume_selected_project(terminal).await;
+        finish_blocking_op(app);
+        result?;
+    }
     Ok(())
 }
 
@@ -295,34 +390,38 @@ async fn handle_pause_or_push<B: Backend>(app: &mut App, terminal: &mut Terminal
         // Individual spec selected: create push session (replaces two-way if running)
         app.blocking_op = Some(BlockingOperation {
             message: "Creating push session...".to_string(),
+            current: None,
+            total: None,
         });
         terminal.draw(|f| ui::draw(f, app))?;
 
         app.push_selected_spec().await;
-        app.blocking_op = None;
+        finish_blocking_op(app);
     } else if app.selection.is_project_selected() {
         // Project selected: create push sessions for all specs (replaces two-way sessions)
         // Count sessions to create for proper plural message
-        let session_count = if let Some(project_idx) = app.get_selected_project_index() {
-            app.projects
-                .get(project_idx)
-                .map(|p| p.file.sessions.len())
-                .unwrap_or(0)
-        } else {
-            0
-        };
+        let session_count = app
+            .get_selected_project_index()
+            .and_then(|idx| app.projects.get(idx))
+            .map(|p| p.file.sessions.len())
+            .unwrap_or(0);
+
         let message = if session_count == 1 {
             "Creating push session...".to_string()
         } else {
             format!("Creating {} push sessions...", session_count)
         };
 
-        // Show blocking modal before operation
-        app.blocking_op = Some(BlockingOperation { message });
+        app.blocking_op = Some(BlockingOperation {
+            message,
+            current: None,
+            total: None,
+        });
         terminal.draw(|f| ui::draw(f, app))?;
 
-        app.push_selected_project().await;
-        app.blocking_op = None;
+        let result = app.push_selected_project(terminal).await;
+        finish_blocking_op(app);
+        result?;
     }
     Ok(())
 }
@@ -332,34 +431,37 @@ async fn handle_toggle_pause<B: Backend>(app: &mut App, terminal: &mut Terminal<
     // Check if operating on project vs single spec
     if app.selection.is_project_selected() {
         // Project selected: show blocking modal for pause/resume all
-        let has_running = if let Some(project_idx) = app.get_selected_project_index() {
-            if let Some(project) = app.projects.get(project_idx) {
-                project.specs.iter()
+        let has_running = app
+            .get_selected_project_index()
+            .and_then(|idx| app.projects.get(idx))
+            .map(|project| {
+                project
+                    .specs
+                    .iter()
                     .filter_map(|spec| spec.running_session.as_ref())
                     .any(|s| !s.paused)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+            })
+            .unwrap_or(false);
 
-        let operation_name = if has_running {
+        let message = if has_running {
             "Pausing all specs..."
         } else {
             "Resuming all specs..."
         };
 
         app.blocking_op = Some(BlockingOperation {
-            message: operation_name.to_string(),
+            message: message.to_string(),
+            current: None,
+            total: None,
         });
         terminal.draw(|f| ui::draw(f, app))?;
 
-        app.toggle_pause_selected().await;
-        app.blocking_op = None;
+        let result = app.toggle_pause_selected(terminal).await;
+        finish_blocking_op(app);
+        result?;
     } else {
         // Single spec: no modal needed (quick operation)
-        app.toggle_pause_selected().await;
+        app.toggle_pause_selected(terminal).await?;
     }
     Ok(())
 }

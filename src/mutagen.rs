@@ -39,10 +39,10 @@ fn project_has_running_sessions(project_file: &Path, sessions: &[SyncSession]) -
 
 #[derive(Debug, Clone, Default)]
 pub enum SyncTime {
-    Never,   // Brand new session, no syncs yet
+    Never, // Brand new session, no syncs yet
     #[default]
     Unknown, // Pre-existing session, sync history unknown
-    At,      // Observed sync (timestamp not tracked)
+    At,    // Observed sync (timestamp not tracked)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,7 +229,9 @@ impl SyncSession {
     pub fn progress_percentage(&self) -> Option<u8> {
         // Check beta endpoint for staging progress (more common for push operations)
         if let Some(ref progress) = self.beta.staging_progress {
-            if let (Some(received), Some(expected)) = (progress.received_files, progress.expected_files) {
+            if let (Some(received), Some(expected)) =
+                (progress.received_files, progress.expected_files)
+            {
                 if expected > 0 {
                     return Some(((received * 100) / expected).min(100) as u8);
                 }
@@ -237,7 +239,9 @@ impl SyncSession {
         }
         // Check alpha endpoint for staging progress
         if let Some(ref progress) = self.alpha.staging_progress {
-            if let (Some(received), Some(expected)) = (progress.received_files, progress.expected_files) {
+            if let (Some(received), Some(expected)) =
+                (progress.received_files, progress.expected_files)
+            {
                 if expected > 0 {
                     return Some(((received * 100) / expected).min(100) as u8);
                 }
@@ -245,7 +249,6 @@ impl SyncSession {
         }
         None
     }
-
 }
 
 /// Client for interacting with the Mutagen CLI.
@@ -406,21 +409,6 @@ impl<R: CommandRunner> MutagenClient<R> {
         Ok(())
     }
 
-    pub async fn terminate_project(&self, project_file: &Path) -> Result<()> {
-        let path_str = project_file.to_string_lossy();
-        let output = self
-            .runner
-            .run("mutagen", &["project", "terminate", "-f", &path_str], 10)
-            .await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("mutagen project terminate failed: {}", stderr);
-        }
-
-        Ok(())
-    }
-
     /// Ensures a directory exists on an endpoint (local or remote).
     /// For remote endpoints (SSH, Docker), uses SSH to create the directory.
     /// For local paths, uses std::fs::create_dir_all with tilde expansion.
@@ -439,7 +427,10 @@ impl<R: CommandRunner> MutagenClient<R> {
                     .with_context(|| format!("Failed to create local directory {:?}", final_path))
             }
             EndpointAddress::Ssh {
-                user, host, port, path
+                user,
+                host,
+                port,
+                path,
             } => {
                 // Build the SSH host string (user@host or just host)
                 let ssh_host = match user {
@@ -510,6 +501,36 @@ impl<R: CommandRunner> MutagenClient<R> {
             "-n",
             name,
         ];
+
+        // Collect ignore patterns as owned strings to extend lifetime
+        let ignore_args: Vec<String> = ignore
+            .unwrap_or(&[])
+            .iter()
+            .flat_map(|pattern| vec!["--ignore".to_string(), pattern.clone()])
+            .collect();
+
+        // Convert to &str slice for the runner
+        let ignore_refs: Vec<&str> = ignore_args.iter().map(|s| s.as_str()).collect();
+        args.extend(ignore_refs);
+
+        let output = self.runner.run("mutagen", &args, 15).await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("mutagen sync create failed: {}", stderr);
+        }
+
+        Ok(())
+    }
+
+    pub async fn create_two_way_session(
+        &self,
+        name: &str,
+        alpha: &str,
+        beta: &str,
+        ignore: Option<&[String]>,
+    ) -> Result<()> {
+        let mut args = vec!["sync", "create", alpha, beta, "-n", name];
 
         // Collect ignore patterns as owned strings to extend lifetime
         let ignore_args: Vec<String> = ignore

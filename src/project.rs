@@ -85,9 +85,7 @@ impl SyncSpec {
 
     /// Get conflicts from running session if any
     pub fn conflicts(&self) -> Option<&Vec<crate::mutagen::Conflict>> {
-        self.running_session
-            .as_ref()
-            .map(|s| &s.conflicts)
+        self.running_session.as_ref().map(|s| &s.conflicts)
     }
 
     /// Check if spec has conflicts
@@ -230,13 +228,6 @@ pub struct Project {
     pub specs: Vec<SyncSpec>,
     /// Whether project tree is folded (collapsed)
     pub folded: bool,
-}
-
-impl Project {
-    /// Check if project has any running sessions
-    pub fn is_active(&self) -> bool {
-        self.specs.iter().any(|s| s.is_running())
-    }
 }
 
 pub fn discover_project_files(
@@ -417,21 +408,17 @@ fn build_search_paths(base_dir: Option<&Path>) -> Vec<String> {
 }
 
 /// Build sync specs from project file and running sessions
-pub fn build_sync_specs(
-    project_file: &ProjectFile,
-    sessions: &[SyncSession],
-) -> Vec<SyncSpec> {
+pub fn build_sync_specs(project_file: &ProjectFile, sessions: &[SyncSession]) -> Vec<SyncSpec> {
     let mut specs = Vec::new();
 
-    for (name, _definition) in &project_file.sessions {
+    for name in project_file.sessions.keys() {
         // Find matching running session(s)
-        let two_way_session = sessions.iter().find(|s| {
-            s.name == *name && s.mode.as_deref() != Some("one-way-replica")
-        });
+        let two_way_session = sessions
+            .iter()
+            .find(|s| s.name == *name && s.mode.as_deref() != Some("one-way-replica"));
 
         let push_session = sessions.iter().find(|s| {
-            s.name == format!("{}-push", name)
-                && s.mode.as_deref() == Some("one-way-replica")
+            s.name == format!("{}-push", name) && s.mode.as_deref() == Some("one-way-replica")
         });
 
         // Determine state and attach session
@@ -1030,7 +1017,7 @@ sync:
             specs: vec![spec],
             folded: false,
         };
-        assert!(project.is_active());
+        assert!(project.specs.iter().any(|s| s.is_running()));
     }
 
     #[test]
@@ -1051,7 +1038,6 @@ sync:
             specs: vec![spec],
             folded: false,
         };
-        assert!(!project.is_active());
+        assert!(!project.specs.iter().any(|s| s.is_running()));
     }
-
 }

@@ -136,5 +136,4 @@ mod tests {
         // Single item: key, description
         assert_eq!(line.spans.len(), 2);
     }
-
 }

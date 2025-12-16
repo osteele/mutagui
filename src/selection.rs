@@ -202,8 +202,8 @@ mod tests {
     fn test_rebuild_from_projects_folded() {
         let mut sel = SelectionManager::new();
         let projects = vec![
-            make_test_project("p1", 2, true),  // Folded
-            make_test_project("p2", 3, true),  // Folded
+            make_test_project("p1", 2, true), // Folded
+            make_test_project("p2", 3, true), // Folded
         ];
 
         sel.rebuild_from_projects(&projects);

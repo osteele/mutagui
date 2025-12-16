@@ -149,24 +149,29 @@ The TUI displays a hierarchical tree view of projects and their sync specs:
 |-----|--------|
 | `r` | Refresh session list and projects |
 | `m` | Toggle display mode (show paths vs. last sync time) |
+| `?` | Show help screen with all commands |
 | `q` / `Ctrl-C` | Quit application |
 
 #### Project Actions (when project selected)
 | Key | Action |
 |-----|--------|
 | `e` | Edit project configuration file |
-| `s` | Start/stop all specs in project |
+| `s` | Start all specs in project |
+| `t` | Terminate all specs in project |
+| `f` | Flush all specs in project |
 | `p` | Create push sessions for all specs |
 | `Space` | Pause/resume all running specs |
+| `u` | Resume all paused specs |
 
 #### Spec Actions (when individual spec selected)
 | Key | Action |
 |-----|--------|
+| `s` | Start this spec |
+| `t` | Terminate this spec |
+| `f` | Flush this spec |
 | `p` | Create push session (replaces two-way if running) |
 | `Space` | Pause/resume spec |
 | `u` | Resume paused spec |
-| `f` | Flush spec |
-| `t` | Terminate spec |
 | `c` | View conflicts |
 
 ### Editor Integration

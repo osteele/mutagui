@@ -452,5 +452,4 @@ mod tests {
         let docker = EndpointAddress::parse("docker://container/app");
         assert_eq!(docker.path(), Path::new("/app"));
     }
-
 }

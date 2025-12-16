@@ -3,8 +3,10 @@ use crate::mutagen::MutagenClient;
 use crate::project::{correlate_projects_with_sessions, discover_project_files, Project};
 use crate::selection::SelectionManager;
 use crate::theme::{detect_theme, ColorScheme};
+use crate::ui;
 use anyhow::Result;
 use chrono::{DateTime, Local};
+use ratatui::{backend::Backend, Terminal};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,8 @@ impl StatusMessage {
 #[derive(Debug, Clone)]
 pub struct BlockingOperation {
     pub message: String,
+    pub current: Option<usize>,
+    pub total: Option<usize>,
 }
 
 pub struct App {
@@ -56,6 +60,7 @@ pub struct App {
     pub project_dir: Option<PathBuf>,
     pub session_display_mode: SessionDisplayMode,
     pub viewing_conflicts: bool,
+    pub viewing_help: bool,
     pub has_refresh_error: bool, // Track if last refresh failed to prevent error loops
     pub blocking_op: Option<BlockingOperation>,
     config: Config,
@@ -90,6 +95,7 @@ impl App {
             project_dir,
             session_display_mode,
             viewing_conflicts: false,
+            viewing_help: false,
             has_refresh_error: false,
             blocking_op: None,
             config,
@@ -97,7 +103,6 @@ impl App {
     }
 
     // ============ Selection accessors (delegate to SelectionManager) ============
-
 
     pub async fn refresh_sessions(&mut self) -> Result<()> {
         match self.mutagen_client.list_sessions().await {
@@ -246,15 +251,6 @@ impl App {
         self.selection.selected_spec()
     }
 
-    pub fn selected_project_has_running_specs(&self) -> bool {
-        if let Some(project_idx) = self.get_selected_project_index() {
-            if let Some(project) = self.projects.get(project_idx) {
-                return project.specs.iter().any(|s| s.is_running());
-            }
-        }
-        false
-    }
-
     pub async fn pause_selected(&mut self) {
         if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
             if let Some(project) = self.projects.get(proj_idx) {
@@ -283,7 +279,11 @@ impl App {
             if let Some(project) = self.projects.get(proj_idx) {
                 if let Some(spec) = project.specs.get(spec_idx) {
                     if let Some(session) = &spec.running_session {
-                        match self.mutagen_client.resume_session(&session.identifier).await {
+                        match self
+                            .mutagen_client
+                            .resume_session(&session.identifier)
+                            .await
+                        {
                             Ok(_) => {
                                 self.status_message = Some(StatusMessage::info(format!(
                                     "Resumed spec: {}",
@@ -306,7 +306,11 @@ impl App {
             if let Some(project) = self.projects.get(proj_idx) {
                 if let Some(spec) = project.specs.get(spec_idx) {
                     if let Some(session) = &spec.running_session {
-                        match self.mutagen_client.terminate_session(&session.identifier).await {
+                        match self
+                            .mutagen_client
+                            .terminate_session(&session.identifier)
+                            .await
+                        {
                             Ok(_) => {
                                 self.status_message = Some(StatusMessage::info(format!(
                                     "Terminated spec: {}",
@@ -314,8 +318,10 @@ impl App {
                                 )));
                             }
                             Err(e) => {
-                                self.status_message =
-                                    Some(StatusMessage::error(format!("Failed to terminate: {}", e)));
+                                self.status_message = Some(StatusMessage::error(format!(
+                                    "Failed to terminate: {}",
+                                    e
+                                )));
                             }
                         }
                     }
@@ -347,6 +353,96 @@ impl App {
         }
     }
 
+    pub async fn start_selected_spec(&mut self) {
+        if let Some((project_idx, spec_idx)) = self.selection.selected_spec() {
+            if let Some(project) = self.projects.get(project_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    // Don't start if already running
+                    if spec.is_running() {
+                        self.status_message = Some(StatusMessage::warning(format!(
+                            "Spec already running: {}",
+                            spec.name
+                        )));
+                        return;
+                    }
+
+                    // Get session definition from project file
+                    if let Some(session_def) = project.file.sessions.get(&spec.name) {
+                        // Get defaults for ignore patterns
+                        let defaults_value = project
+                            .file
+                            .defaults
+                            .as_ref()
+                            .and_then(|defaults| serde_yaml::to_value(defaults).ok());
+
+                        // Extract ignore patterns (same as push_selected_spec)
+                        let ignore_patterns =
+                            session_def.get_ignore_patterns(defaults_value.as_ref());
+                        let ignore = if ignore_patterns.is_empty() {
+                            None
+                        } else {
+                            Some(ignore_patterns)
+                        };
+
+                        // Ensure directories exist (same pattern as push_selected_spec)
+                        if let Err(e) = self
+                            .mutagen_client
+                            .ensure_endpoint_directory_exists(&session_def.alpha)
+                            .await
+                        {
+                            self.status_message = Some(StatusMessage::error(format!(
+                                "Failed to create alpha directory: {}",
+                                e
+                            )));
+                            return;
+                        }
+                        if let Err(e) = self
+                            .mutagen_client
+                            .ensure_endpoint_directory_exists(&session_def.beta)
+                            .await
+                        {
+                            self.status_message = Some(StatusMessage::error(format!(
+                                "Failed to create beta directory: {}",
+                                e
+                            )));
+                            return;
+                        }
+
+                        // Create two-way session
+                        match self
+                            .mutagen_client
+                            .create_two_way_session(
+                                &spec.name,
+                                &session_def.alpha,
+                                &session_def.beta,
+                                ignore.as_deref(),
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                self.status_message = Some(StatusMessage::info(format!(
+                                    "Started spec: {}",
+                                    spec.name
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_message = Some(StatusMessage::error(format!(
+                                    "Failed to start spec: {}",
+                                    e
+                                )));
+                            }
+                        }
+                    } else {
+                        self.status_message = Some(StatusMessage::error(format!(
+                            "Session definition not found: {}",
+                            spec.name
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn start_selected_project(&mut self) {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
@@ -368,45 +464,202 @@ impl App {
         }
     }
 
-    pub async fn toggle_selected_project(&mut self) {
+    pub async fn terminate_selected_project<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                let is_running = project.is_active();
+                let running_specs: Vec<_> =
+                    project.specs.iter().filter(|s| s.is_running()).collect();
 
-                if is_running {
-                    // Project is running → terminate it
-                    match self.mutagen_client.terminate_project(&project.file.path).await {
-                        Ok(_) => {
-                            self.status_message = Some(StatusMessage::info(format!(
-                                "Terminated project: {}",
-                                project.file.display_name()
-                            )));
-                        }
-                        Err(e) => {
-                            self.status_message = Some(StatusMessage::error(format!(
-                                "Failed to terminate project: {}",
-                                e
-                            )));
+                if running_specs.is_empty() {
+                    self.status_message =
+                        Some(StatusMessage::info("No running specs to terminate"));
+                    return Ok(());
+                }
+
+                let total = running_specs.len();
+                let mut terminated_count = 0;
+                let mut errors: Vec<String> = Vec::new();
+
+                for (idx, spec) in running_specs.iter().enumerate() {
+                    // Update progress
+                    if let Some(ref mut blocking_op) = self.blocking_op {
+                        blocking_op.current = Some(idx + 1);
+                        blocking_op.total = Some(total);
+                    }
+                    // Redraw to show progress
+                    terminal.draw(|f| ui::draw(f, self))?;
+
+                    if let Some(session) = &spec.running_session {
+                        match self
+                            .mutagen_client
+                            .terminate_session(&session.identifier)
+                            .await
+                        {
+                            Ok(_) => terminated_count += 1,
+                            Err(e) => errors.push(format!("{}: {}", spec.name, e)),
                         }
                     }
+                }
+
+                // Status message (follows pattern from push_selected_project)
+                if terminated_count > 0 && errors.is_empty() {
+                    self.status_message = Some(StatusMessage::info(format!(
+                        "Terminated {} session(s)",
+                        terminated_count
+                    )));
+                } else if terminated_count > 0 && !errors.is_empty() {
+                    self.status_message = Some(StatusMessage::warning(format!(
+                        "Terminated {} session(s), {} failed. First error: {}",
+                        terminated_count,
+                        errors.len(),
+                        errors[0]
+                    )));
                 } else {
-                    // Project not running → start it
-                    // First terminate any lingering sessions that might interfere
-                    for spec in &project.specs {
-                        if let Some(session) = &spec.running_session {
-                            let _ = self
-                                .mutagen_client
-                                .terminate_session(&session.identifier)
-                                .await;
-                        }
-                    }
-                    self.start_selected_project().await;
+                    self.status_message = Some(StatusMessage::error(format!(
+                        "Failed to terminate {} session(s). First error: {}",
+                        errors.len(),
+                        errors[0]
+                    )));
                 }
             }
         }
+        Ok(())
     }
 
-    pub async fn push_selected_project(&mut self) {
+    pub async fn flush_selected_project<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                let running_specs: Vec<_> =
+                    project.specs.iter().filter(|s| s.is_running()).collect();
+
+                if running_specs.is_empty() {
+                    self.status_message = Some(StatusMessage::info("No running specs to flush"));
+                    return Ok(());
+                }
+
+                let total = running_specs.len();
+                let mut flushed_count = 0;
+                let mut errors: Vec<String> = Vec::new();
+
+                for (idx, spec) in running_specs.iter().enumerate() {
+                    // Update progress
+                    if let Some(ref mut blocking_op) = self.blocking_op {
+                        blocking_op.current = Some(idx + 1);
+                        blocking_op.total = Some(total);
+                    }
+                    // Redraw to show progress
+                    terminal.draw(|f| ui::draw(f, self))?;
+
+                    if let Some(session) = &spec.running_session {
+                        match self.mutagen_client.flush_session(&session.identifier).await {
+                            Ok(_) => flushed_count += 1,
+                            Err(e) => errors.push(format!("{}: {}", spec.name, e)),
+                        }
+                    }
+                }
+
+                // Status message (same pattern as terminate)
+                if flushed_count > 0 && errors.is_empty() {
+                    self.status_message = Some(StatusMessage::info(format!(
+                        "Flushed {} session(s)",
+                        flushed_count
+                    )));
+                } else if flushed_count > 0 && !errors.is_empty() {
+                    self.status_message = Some(StatusMessage::warning(format!(
+                        "Flushed {} session(s), {} failed. First error: {}",
+                        flushed_count,
+                        errors.len(),
+                        errors[0]
+                    )));
+                } else {
+                    self.status_message = Some(StatusMessage::error(format!(
+                        "Failed to flush {} session(s). First error: {}",
+                        errors.len(),
+                        errors[0]
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn resume_selected_project<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
+        if let Some(project_idx) = self.get_selected_project_index() {
+            if let Some(project) = self.projects.get(project_idx) {
+                let paused_specs: Vec<_> = project
+                    .specs
+                    .iter()
+                    .filter(|s| s.running_session.as_ref().is_some_and(|sess| sess.paused))
+                    .collect();
+
+                if paused_specs.is_empty() {
+                    self.status_message = Some(StatusMessage::info("No paused specs to resume"));
+                    return Ok(());
+                }
+
+                let total = paused_specs.len();
+                let mut resumed_count = 0;
+                let mut errors: Vec<String> = Vec::new();
+
+                for (idx, spec) in paused_specs.iter().enumerate() {
+                    // Update progress
+                    if let Some(ref mut blocking_op) = self.blocking_op {
+                        blocking_op.current = Some(idx + 1);
+                        blocking_op.total = Some(total);
+                    }
+                    // Redraw to show progress
+                    terminal.draw(|f| ui::draw(f, self))?;
+
+                    if let Some(session) = &spec.running_session {
+                        match self
+                            .mutagen_client
+                            .resume_session(&session.identifier)
+                            .await
+                        {
+                            Ok(_) => resumed_count += 1,
+                            Err(e) => errors.push(format!("{}: {}", spec.name, e)),
+                        }
+                    }
+                }
+
+                // Status message (same pattern)
+                if resumed_count > 0 && errors.is_empty() {
+                    self.status_message = Some(StatusMessage::info(format!(
+                        "Resumed {} session(s)",
+                        resumed_count
+                    )));
+                } else if resumed_count > 0 && !errors.is_empty() {
+                    self.status_message = Some(StatusMessage::warning(format!(
+                        "Resumed {} session(s), {} failed. First error: {}",
+                        resumed_count,
+                        errors.len(),
+                        errors[0]
+                    )));
+                } else {
+                    self.status_message = Some(StatusMessage::error(format!(
+                        "Failed to resume {} session(s). First error: {}",
+                        errors.len(),
+                        errors[0]
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn push_selected_project<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
                 // Terminate all running sessions for this project before creating push sessions
@@ -422,7 +675,7 @@ impl App {
                 if project.file.sessions.is_empty() {
                     self.status_message =
                         Some(StatusMessage::error("No sessions defined in project file"));
-                    return;
+                    return Ok(());
                 }
 
                 // Create push sessions for ALL sessions in the project
@@ -437,7 +690,14 @@ impl App {
                     .as_ref()
                     .and_then(|defaults| serde_yaml::to_value(defaults).ok());
 
-                for (session_name, session_def) in &project.file.sessions {
+                for (idx, (session_name, session_def)) in project.file.sessions.iter().enumerate() {
+                    // Update progress
+                    if let Some(ref mut blocking_op) = self.blocking_op {
+                        blocking_op.current = Some(idx + 1);
+                        blocking_op.total = Some(total_sessions);
+                    }
+                    // Redraw to show progress
+                    terminal.draw(|f| ui::draw(f, self))?;
                     let push_name = format!("{}-push", session_name);
 
                     // Extract ignore patterns, merging with defaults
@@ -496,7 +756,10 @@ impl App {
                     let msg = if created_count == total_sessions {
                         format!("Created {} push session(s)", created_count)
                     } else {
-                        format!("Created {} of {} push session(s)", created_count, total_sessions)
+                        format!(
+                            "Created {} of {} push session(s)",
+                            created_count, total_sessions
+                        )
                     };
                     self.status_message = Some(StatusMessage::info(msg));
                 } else if created_count > 0 && !errors.is_empty() {
@@ -512,10 +775,20 @@ impl App {
                 } else {
                     // All failed
                     let error_msg = if errors.len() == 1 {
-                        format!("Failed to create push session {}: {}", errors[0].0, errors[0].1)
+                        format!(
+                            "Failed to create push session {}: {}",
+                            errors[0].0, errors[0].1
+                        )
                     } else {
-                        let error_details: Vec<String> = errors.iter().map(|(name, err)| format!("{}: {}", name, err)).collect();
-                        format!("Failed to create {} push sessions: {}", errors.len(), error_details.join("; "))
+                        let error_details: Vec<String> = errors
+                            .iter()
+                            .map(|(name, err)| format!("{}: {}", name, err))
+                            .collect();
+                        format!(
+                            "Failed to create {} push sessions: {}",
+                            errors.len(),
+                            error_details.join("; ")
+                        )
                     };
                     self.status_message = Some(StatusMessage::error(error_msg));
                 }
@@ -525,6 +798,7 @@ impl App {
         } else {
             self.status_message = Some(StatusMessage::error("No project selected"));
         }
+        Ok(())
     }
 
     /// Create a push session for the selected spec, replacing any existing two-way session.
@@ -554,7 +828,8 @@ impl App {
                             .and_then(|defaults| serde_yaml::to_value(defaults).ok());
 
                         // Extract ignore patterns, merging with defaults
-                        let ignore_patterns = session_def.get_ignore_patterns(defaults_value.as_ref());
+                        let ignore_patterns =
+                            session_def.get_ignore_patterns(defaults_value.as_ref());
                         let ignore = if ignore_patterns.is_empty() {
                             None
                         } else {
@@ -626,25 +901,34 @@ impl App {
         }
     }
 
-    pub async fn pause_selected_project(&mut self) {
+    pub async fn pause_selected_project<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
         if let Some(project_idx) = self.get_selected_project_index() {
             if let Some(project) = self.projects.get(project_idx) {
-                let running_specs: Vec<_> = project
-                    .specs
-                    .iter()
-                    .filter(|s| s.is_running())
-                    .collect();
+                let running_specs: Vec<_> =
+                    project.specs.iter().filter(|s| s.is_running()).collect();
 
                 if running_specs.is_empty() {
                     self.status_message = Some(StatusMessage::info("No running specs to pause"));
-                    return;
+                    return Ok(());
                 }
 
+                let total = running_specs.len();
                 // Pause ALL running sessions individually
                 let mut paused_count = 0;
                 let mut errors: Vec<String> = Vec::new();
 
-                for spec in running_specs {
+                for (idx, spec) in running_specs.iter().enumerate() {
+                    // Update progress
+                    if let Some(ref mut blocking_op) = self.blocking_op {
+                        blocking_op.current = Some(idx + 1);
+                        blocking_op.total = Some(total);
+                    }
+                    // Redraw to show progress
+                    terminal.draw(|f| ui::draw(f, self))?;
+
                     if let Some(session) = &spec.running_session {
                         match self.mutagen_client.pause_session(&session.identifier).await {
                             Ok(_) => paused_count += 1,
@@ -673,58 +957,13 @@ impl App {
                 }
             }
         }
+        Ok(())
     }
 
-    pub async fn resume_selected_project(&mut self) {
-        if let Some(project_idx) = self.get_selected_project_index() {
-            if let Some(project) = self.projects.get(project_idx) {
-                let running_specs: Vec<_> = project
-                    .specs
-                    .iter()
-                    .filter(|s| s.is_running())
-                    .collect();
-
-                if running_specs.is_empty() {
-                    self.status_message = Some(StatusMessage::info("No running specs to resume"));
-                    return;
-                }
-
-                // Resume ALL running sessions individually
-                let mut resumed_count = 0;
-                let mut errors: Vec<String> = Vec::new();
-
-                for spec in running_specs {
-                    if let Some(session) = &spec.running_session {
-                        match self.mutagen_client.resume_session(&session.identifier).await {
-                            Ok(_) => resumed_count += 1,
-                            Err(e) => errors.push(format!("{}: {}", spec.name, e)),
-                        }
-                    }
-                }
-
-                // Set status message based on results
-                if resumed_count > 0 && errors.is_empty() {
-                    self.status_message = Some(StatusMessage::info(format!(
-                        "Resumed {} session(s)",
-                        resumed_count
-                    )));
-                } else if resumed_count > 0 && !errors.is_empty() {
-                    self.status_message = Some(StatusMessage::warning(format!(
-                        "Resumed {} session(s), {} failed",
-                        resumed_count,
-                        errors.len()
-                    )));
-                } else {
-                    self.status_message = Some(StatusMessage::error(format!(
-                        "Failed to resume {} session(s)",
-                        errors.len()
-                    )));
-                }
-            }
-        }
-    }
-
-    pub async fn toggle_pause_selected(&mut self) {
+    pub async fn toggle_pause_selected<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
         if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
             // Individual spec selected - toggle its pause state
             if let Some(project) = self.projects.get(proj_idx) {
@@ -739,24 +978,26 @@ impl App {
         } else if let Some(project_idx) = self.get_selected_project_index() {
             // Project selected - toggle pause for all its running specs
             if let Some(project) = self.projects.get(project_idx) {
-                let running_specs: Vec<_> = project.specs.iter().filter(|s| s.is_running()).collect();
+                let running_specs: Vec<_> =
+                    project.specs.iter().filter(|s| s.is_running()).collect();
 
                 if running_specs.is_empty() {
                     self.status_message = Some(StatusMessage::info(
                         "Project has no running specs. Use 's' to start.",
                     ));
-                    return;
+                    return Ok(());
                 }
 
                 // Check if any spec is running (not paused)
                 let has_running = running_specs.iter().any(|s| !s.is_paused());
                 if has_running {
-                    self.pause_selected_project().await;
+                    self.pause_selected_project(terminal).await?;
                 } else {
-                    self.resume_selected_project().await;
+                    self.resume_selected_project(terminal).await?;
                 }
             }
         }
+        Ok(())
     }
 
     pub fn quit(&mut self) {
@@ -800,6 +1041,10 @@ impl App {
         } else {
             self.status_message = Some(StatusMessage::error("Select a spec to view conflicts"));
         }
+    }
+
+    pub fn toggle_help_view(&mut self) {
+        self.viewing_help = !self.viewing_help;
     }
 
     pub fn get_selected_spec_conflicts(&self) -> Option<&Vec<crate::mutagen::Conflict>> {
