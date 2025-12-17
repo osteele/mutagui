@@ -398,7 +398,7 @@ fn render_spec_row(
                 Style::default().fg(theme.status_paused_fg),
             ));
             spans.push(Span::styled(
-                format!("{:<36}", spec.name),
+                format!("{:<32}", spec.name),
                 Style::default().fg(theme.session_name_fg),
             ));
             spans.push(Span::raw(" ".to_string()));
@@ -449,7 +449,7 @@ fn render_spec_row(
                     spec.name.clone()
                 };
                 spans.push(Span::styled(
-                    format!("{:<36}", name_with_mode),
+                    format!("{:<32}", name_with_mode),
                     Style::default()
                         .fg(theme.session_name_fg)
                         .add_modifier(Modifier::BOLD),

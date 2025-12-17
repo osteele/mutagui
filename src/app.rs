@@ -1041,19 +1041,23 @@ impl App {
     }
 
     pub fn toggle_conflict_view(&mut self) {
+        // If already viewing conflicts, just close (no conditions needed)
+        if self.viewing_conflicts {
+            self.viewing_conflicts = false;
+            self.status_message = None;
+            return;
+        }
+
+        // Opening requires a spec with conflicts
         if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
             if let Some(project) = self.projects.get(proj_idx) {
                 if let Some(spec) = project.specs.get(spec_idx) {
                     if spec.has_conflicts() {
-                        self.viewing_conflicts = !self.viewing_conflicts;
-                        if self.viewing_conflicts {
-                            self.status_message = Some(StatusMessage::info(format!(
-                                "Viewing conflicts for: {}",
-                                spec.name
-                            )));
-                        } else {
-                            self.status_message = None;
-                        }
+                        self.viewing_conflicts = true;
+                        self.status_message = Some(StatusMessage::info(format!(
+                            "Viewing conflicts for: {}",
+                            spec.name
+                        )));
                     } else {
                         self.status_message =
                             Some(StatusMessage::error("No conflicts in selected spec"));
