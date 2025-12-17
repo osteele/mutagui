@@ -4,7 +4,7 @@ use crate::selection::SelectableItem;
 use crate::widgets::{HelpBar, StyledText};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
@@ -17,6 +17,23 @@ fn truncate_digest(digest: &str) -> &str {
         &digest[..8]
     } else {
         digest
+    }
+}
+
+/// Format a byte size as a human-readable string (e.g., "1.5 MB")
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1}G", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1}M", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1}K", bytes as f64 / KB as f64)
+    } else {
+        format!("{}B", bytes)
     }
 }
 
@@ -236,6 +253,9 @@ fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Sp
     let running_count = project.specs.iter().filter(|s| s.is_running()).count();
     let total_count = project.specs.len();
 
+    // Count paused specs (running but paused)
+    let paused_count = project.specs.iter().filter(|s| s.is_paused()).count();
+
     // Count push mode specs
     let push_count = project
         .specs
@@ -268,11 +288,50 @@ fn render_project_header(app: &App, project: &crate::project::Project) -> Vec<Sp
         ),
     ];
 
+    // Collect status icons from all running sessions - bubble up if all agree
+    let unified_status_icon: Option<&str> = {
+        let status_icons: Vec<&str> = project
+            .specs
+            .iter()
+            .filter_map(|s| s.running_session.as_ref())
+            .filter(|s| !s.paused)
+            .map(|s| s.status_icon())
+            .collect();
+
+        if !status_icons.is_empty() && status_icons.iter().all(|&icon| icon == status_icons[0]) {
+            Some(status_icons[0])
+        } else {
+            None
+        }
+    };
+
+    // Add unified status icon if all running sessions agree
+    if let Some(icon) = unified_status_icon {
+        spans.push(Span::styled(
+            format!(" {}", icon),
+            Style::default().fg(theme.session_status_fg),
+        ));
+    }
+
     // Add running status
+    // Check if all running specs are paused
+    let all_paused = running_count > 0 && paused_count == running_count;
+
     if running_count == 0 {
         spans.push(Span::styled(
             "  Not running".to_string(),
             Style::default().fg(theme.session_status_fg),
+        ));
+    } else if all_paused {
+        // All running specs are paused
+        let status_text = if running_count == total_count {
+            "  Paused".to_string()
+        } else {
+            format!("  {}/{} paused", running_count, total_count)
+        };
+        spans.push(Span::styled(
+            status_text,
+            Style::default().fg(theme.status_paused_fg),
         ));
     } else if running_count == total_count {
         let status_text = if push_count > 0 {
@@ -483,9 +542,61 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                         session.status_text().to_string(),
                     ];
 
-                    // Add progress percentage if available
-                    if let Some(pct) = session.progress_percentage() {
-                        parts.push(format!(" ({}%)", pct));
+                    // Add staging progress details if available
+                    let staging = session
+                        .beta
+                        .staging_progress
+                        .as_ref()
+                        .or(session.alpha.staging_progress.as_ref());
+
+                    if let Some(progress) = staging {
+                        // Show percentage - prefer byte-based for granular progress on large files
+                        let pct = if let (Some(received), Some(expected)) =
+                            (progress.received_size, progress.expected_size)
+                        {
+                            if expected > 0 {
+                                Some(((received * 100) / expected).min(100))
+                            } else {
+                                None
+                            }
+                        } else if let (Some(received), Some(expected)) =
+                            (progress.received_files, progress.expected_files)
+                        {
+                            if expected > 0 {
+                                Some(((received * 100) / expected).min(100))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        if let Some(pct) = pct {
+                            parts.push(format!(" ({}%)", pct));
+                        }
+
+                        // Show current file being copied
+                        if let Some(path) = &progress.path {
+                            // Extract just the filename for brevity
+                            let filename = std::path::Path::new(path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(path);
+                            parts.push(format!(" | {}", filename));
+                        }
+
+                        // Show file size if available
+                        if let (Some(received), Some(expected)) =
+                            (progress.received_size, progress.expected_size)
+                        {
+                            if expected > 0 {
+                                parts.push(format!(
+                                    " [{}/{}]",
+                                    format_size(received),
+                                    format_size(expected)
+                                ));
+                            }
+                        }
                     }
 
                     // Add conflict count if any
@@ -535,7 +646,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     } else if let Some(project_idx) = app.get_selected_project_index() {
         // Project selected - show status message if important, otherwise project info
         // Important messages: errors, warnings, or operation results (not "Sessions refreshed")
-        let has_important_status = app.status_message.as_ref().map_or(false, |msg| {
+        let has_important_status = app.status_message.as_ref().is_some_and(|msg| {
             matches!(
                 msg,
                 crate::app::StatusMessage::Error(_) | crate::app::StatusMessage::Warning(_)
@@ -671,7 +782,7 @@ fn draw_blocking_modal(f: &mut Frame, app: &App, blocking_op: &crate::app::Block
     let modal_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.color_scheme.help_key_fg))
-        .style(Style::default().bg(app.color_scheme.selection_bg));
+        .style(Style::default().bg(Color::White));
 
     f.render_widget(modal_block, overlay_area);
 
@@ -700,6 +811,7 @@ fn draw_blocking_modal(f: &mut Frame, app: &App, blocking_op: &crate::app::Block
 
 fn draw_conflict_detail(f: &mut Frame, app: &App) {
     use ratatui::layout::{Alignment, Margin};
+    use ratatui::widgets::Clear;
 
     // Create a centered overlay area (80% width, 80% height)
     let area = f.area();
@@ -715,13 +827,15 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
         height: overlay_height,
     };
 
-    // Clear the overlay area with a background
+    f.render_widget(Clear, overlay_area);
+
+    // Clear the overlay area with a white background
     let overlay_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.color_scheme.help_key_fg))
-        .title(" Conflict Details (press 'c' to close) ")
+        .title(" Conflict Details (Esc or 'c' to close) ")
         .title_alignment(Alignment::Center)
-        .style(Style::default().bg(app.color_scheme.selection_bg));
+        .style(Style::default().bg(Color::White));
 
     f.render_widget(overlay_block, overlay_area);
 
@@ -731,12 +845,35 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
         vertical: 1,
     });
 
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(inner_area);
+
+    let info_lines = vec![
+        Line::from(vec![Span::styled(
+            "Press 'b' to push all conflicts to beta (alpha → beta copy)",
+            Style::default()
+                .fg(app.color_scheme.help_key_fg)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "Press Esc or 'c' to close this view",
+            Style::default().fg(app.color_scheme.help_text_fg),
+        )]),
+    ];
+
+    let info = Paragraph::new(info_lines)
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(Color::White));
+    f.render_widget(info, sections[0]);
+
     if let Some(conflicts) = app.get_selected_spec_conflicts() {
         if conflicts.is_empty() {
             let no_conflicts = Paragraph::new("No conflicts found")
                 .style(Style::default().fg(app.color_scheme.session_status_fg))
                 .alignment(Alignment::Center);
-            f.render_widget(no_conflicts, inner_area);
+            f.render_widget(no_conflicts, sections[1]);
         } else {
             let conflict_items: Vec<ListItem> = conflicts
                 .iter()
@@ -752,93 +889,94 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
                             &conflict.root,
                             Style::default().fg(app.color_scheme.session_alpha_fg),
                         ),
+                        Span::raw("  "),
+                        Span::styled(
+                            format!(
+                                "α {} / β {} change{}",
+                                conflict.alpha_changes.len(),
+                                conflict.beta_changes.len(),
+                                if conflict.alpha_changes.len() + conflict.beta_changes.len() == 1 {
+                                    ""
+                                } else {
+                                    "s"
+                                }
+                            ),
+                            Style::default().fg(app.color_scheme.session_status_fg),
+                        ),
                     ])];
 
                     if !conflict.alpha_changes.is_empty() {
-                        lines.push(Line::from(vec![Span::styled(
-                            "  Alpha changes:",
-                            Style::default()
-                                .fg(app.color_scheme.session_name_fg)
-                                .add_modifier(Modifier::BOLD),
-                        )]));
-                        for change in &conflict.alpha_changes {
-                            lines.push(Line::from(vec![
-                                Span::raw("    "),
-                                Span::styled(
-                                    &change.path,
-                                    Style::default().fg(app.color_scheme.session_alpha_fg),
-                                ),
-                            ]));
-
-                            // Format the change description, handling optional FileState
-                            let old_str = format_file_state(&change.old);
-                            let new_str = format_file_state(&change.new);
-
-                            lines.push(Line::from(vec![
-                                Span::raw("      "),
-                                Span::styled(
-                                    old_str,
-                                    Style::default().fg(app.color_scheme.session_status_fg),
-                                ),
-                                Span::raw(" → "),
-                                Span::styled(
-                                    new_str,
-                                    Style::default().fg(app.color_scheme.session_status_fg),
-                                ),
-                            ]));
-                        }
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "  α ",
+                                Style::default()
+                                    .fg(app.color_scheme.session_alpha_fg)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                summarize_conflict_changes(&conflict.alpha_changes),
+                                Style::default().fg(app.color_scheme.session_status_fg),
+                            ),
+                        ]));
                     }
 
                     if !conflict.beta_changes.is_empty() {
-                        lines.push(Line::from(vec![Span::styled(
-                            "  Beta changes:",
-                            Style::default()
-                                .fg(app.color_scheme.session_name_fg)
-                                .add_modifier(Modifier::BOLD),
-                        )]));
-                        for change in &conflict.beta_changes {
-                            lines.push(Line::from(vec![
-                                Span::raw("    "),
-                                Span::styled(
-                                    &change.path,
-                                    Style::default().fg(app.color_scheme.session_beta_fg),
-                                ),
-                            ]));
-
-                            // Format the change description, handling optional FileState
-                            let old_str = format_file_state(&change.old);
-                            let new_str = format_file_state(&change.new);
-
-                            lines.push(Line::from(vec![
-                                Span::raw("      "),
-                                Span::styled(
-                                    old_str,
-                                    Style::default().fg(app.color_scheme.session_status_fg),
-                                ),
-                                Span::raw(" → "),
-                                Span::styled(
-                                    new_str,
-                                    Style::default().fg(app.color_scheme.session_status_fg),
-                                ),
-                            ]));
-                        }
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "  β ",
+                                Style::default()
+                                    .fg(app.color_scheme.session_beta_fg)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                summarize_conflict_changes(&conflict.beta_changes),
+                                Style::default().fg(app.color_scheme.session_status_fg),
+                            ),
+                        ]));
                     }
-
-                    lines.push(Line::from(""));
 
                     ListItem::new(lines)
                 })
                 .collect();
 
-            let conflict_list = List::new(conflict_items).block(Block::default());
-            f.render_widget(conflict_list, inner_area);
+            let conflict_list = List::new(conflict_items)
+                .block(Block::default())
+                .highlight_symbol("→ ");
+            f.render_widget(conflict_list, sections[1]);
         }
     } else {
         let error = Paragraph::new("No session selected")
             .style(Style::default().fg(app.color_scheme.session_status_fg))
             .alignment(Alignment::Center);
-        f.render_widget(error, inner_area);
+        f.render_widget(error, sections[1]);
     }
+}
+
+fn summarize_conflict_changes(changes: &[crate::mutagen::Change]) -> String {
+    const MAX_DISPLAY: usize = 3;
+    if changes.is_empty() {
+        return "No changes".to_string();
+    }
+
+    let mut parts: Vec<String> = changes
+        .iter()
+        .take(MAX_DISPLAY)
+        .map(|change| {
+            let old_state = format_file_state(&change.old);
+            let new_state = format_file_state(&change.new);
+            if old_state == new_state || (old_state == "-" && new_state == "-") {
+                change.path.clone()
+            } else {
+                format!("{} ({} → {})", change.path, old_state, new_state)
+            }
+        })
+        .collect();
+
+    if changes.len() > MAX_DISPLAY {
+        parts.push(format!("+{} more", changes.len() - MAX_DISPLAY));
+    }
+
+    parts.join(", ")
 }
 
 fn draw_help_screen(f: &mut Frame, app: &App) {
@@ -868,7 +1006,7 @@ fn draw_help_screen(f: &mut Frame, app: &App) {
         .border_style(Style::default().fg(app.color_scheme.help_key_fg))
         .title(" Mutagen TUI - Keyboard Commands (press '?' to close) ")
         .title_alignment(Alignment::Center)
-        .style(Style::default().bg(app.color_scheme.selection_bg));
+        .style(Style::default().bg(Color::White));
 
     f.render_widget(overlay_block, overlay_area);
 
@@ -1071,6 +1209,14 @@ fn draw_help_screen(f: &mut Frame, app: &App) {
                 Style::default().fg(theme.help_text_fg),
             ),
         ]),
+        Line::from(vec![
+            Span::styled("  b", Style::default().fg(theme.help_key_fg)),
+            Span::raw("             "),
+            Span::styled(
+                "While viewing conflicts: push alpha changes to beta",
+                Style::default().fg(theme.help_text_fg),
+            ),
+        ]),
         Line::from(""),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1112,18 +1258,6 @@ fn draw_help_screen(f: &mut Frame, app: &App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  👁📦⚖⏳💾⛔", Style::default().fg(theme.help_key_fg)),
-            Span::raw("    "),
-            Span::styled("Session status", Style::default().fg(theme.help_text_fg)),
-        ]),
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                "(watching/staging/reconciling/transitioning/saving/halted)",
-                Style::default().fg(theme.help_text_fg),
-            ),
-        ]),
-        Line::from(vec![
             Span::styled("  ✓⟳⊗", Style::default().fg(theme.help_key_fg)),
             Span::raw("          "),
             Span::styled(
@@ -1142,7 +1276,7 @@ fn draw_help_screen(f: &mut Frame, app: &App) {
     ];
 
     let help_text = Paragraph::new(help_lines)
-        .style(Style::default().bg(app.color_scheme.selection_bg))
+        .style(Style::default().bg(Color::White))
         .wrap(Wrap { trim: false })
         .scroll((0, 0));
 

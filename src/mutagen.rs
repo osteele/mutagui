@@ -224,31 +224,6 @@ impl SyncSession {
             "Unknown"
         }
     }
-
-    /// Get progress percentage from staging progress if available
-    pub fn progress_percentage(&self) -> Option<u8> {
-        // Check beta endpoint for staging progress (more common for push operations)
-        if let Some(ref progress) = self.beta.staging_progress {
-            if let (Some(received), Some(expected)) =
-                (progress.received_files, progress.expected_files)
-            {
-                if expected > 0 {
-                    return Some(((received * 100) / expected).min(100) as u8);
-                }
-            }
-        }
-        // Check alpha endpoint for staging progress
-        if let Some(ref progress) = self.alpha.staging_progress {
-            if let (Some(received), Some(expected)) =
-                (progress.received_files, progress.expected_files)
-            {
-                if expected > 0 {
-                    return Some(((received * 100) / expected).min(100) as u8);
-                }
-            }
-        }
-        None
-    }
 }
 
 /// Client for interacting with the Mutagen CLI.

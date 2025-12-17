@@ -204,6 +204,14 @@ pub async fn handle_key_event<B: Backend>(
             handle_resume(app, terminal).await?;
             Ok(KeyAction::Refresh)
         }
+        KeyCode::Char('b') => {
+            if app.viewing_conflicts {
+                handle_push_conflicts_to_beta(app, terminal).await?;
+                Ok(KeyAction::Refresh)
+            } else {
+                Ok(KeyAction::Continue)
+            }
+        }
         KeyCode::Char('p') => {
             handle_pause_or_push(app, terminal).await?;
             Ok(KeyAction::Refresh)
@@ -423,6 +431,27 @@ async fn handle_pause_or_push<B: Backend>(app: &mut App, terminal: &mut Terminal
         finish_blocking_op(app);
         result?;
     }
+    Ok(())
+}
+
+/// Handle conflict overlay shortcut to push alpha changes to beta.
+async fn handle_push_conflicts_to_beta<B: Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    if !app.viewing_conflicts {
+        return Ok(());
+    }
+
+    app.blocking_op = Some(BlockingOperation {
+        message: "Pushing conflicts to beta...".to_string(),
+        current: None,
+        total: None,
+    });
+    terminal.draw(|f| ui::draw(f, app))?;
+
+    app.push_conflicts_to_beta().await;
+    finish_blocking_op(app);
     Ok(())
 }
 

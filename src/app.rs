@@ -901,6 +901,28 @@ impl App {
         }
     }
 
+    /// Helper invoked from the conflict overlay to push alpha changes to beta.
+    /// Reuses the push logic to copy the entire spec (all conflicts included).
+    pub async fn push_conflicts_to_beta(&mut self) {
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    if spec.has_conflicts() {
+                        self.push_selected_spec().await;
+                    } else {
+                        self.status_message =
+                            Some(StatusMessage::info("No conflicts to push for this spec"));
+                    }
+                    return;
+                }
+            }
+        }
+
+        self.status_message = Some(StatusMessage::error(
+            "Select a conflicted spec before pushing to beta",
+        ));
+    }
+
     pub async fn pause_selected_project<B: Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
@@ -1030,7 +1052,7 @@ impl App {
                                 spec.name
                             )));
                         } else {
-                            self.status_message = Some(StatusMessage::info("Closed conflict view"));
+                            self.status_message = None;
                         }
                     } else {
                         self.status_message =
