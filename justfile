@@ -2,50 +2,46 @@
 default:
     @just --list
 
-# Build the project in release mode
+# Build the project
 build:
-    cargo build --release
-
-# Build the project in debug mode
-build-debug:
-    cargo build
+    go build -o mutagui .
 
 # Run the application
 run:
-    cargo run
-
-# Run the application in release mode
-run-release:
-    cargo run --release
+    go run .
 
 # Run tests
 test:
-    cargo test
+    go test ./...
 
-# Check code with clippy
+# Check code with go vet
 lint:
-    cargo clippy -- -D warnings
+    go vet ./...
 
 # Format code
 format:
-    cargo fmt
+    gofmt -w .
 
 # Check formatting
 format-check:
-    cargo fmt -- --check
+    test -z "$(gofmt -l .)"
 
 # Run all checks (format, lint, test)
 check: format-check lint test
 
-# Fix formatting and linting issues
+# Fix formatting
 fix:
-    cargo fmt
-    cargo clippy --fix --allow-staged --allow-dirty
+    gofmt -w .
 
 # Clean build artifacts
 clean:
-    cargo clean
+    rm -f mutagui
+    go clean
 
-# Install the binary to cargo bin directory
+# Install the binary to GOPATH/bin
 install:
-    cargo install --path .
+    go install .
+
+# Update dependencies
+deps:
+    go mod tidy

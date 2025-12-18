@@ -1,8 +1,19 @@
-# Rust
-/target/
-**/*.rs.bk
-*.pdb
-Cargo.lock
+# Go
+/mutagui
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
 
 # IDE
 .vscode/

@@ -10,14 +10,14 @@ For more development tools, see: https://osteele.com/software/development-tools
   - Fold/unfold projects to show or hide individual sync specs
   - Auto-unfold when conflicts are detected
 - **Project discovery**: Automatically finds and displays `mutagen.yml` files
-  - Searches common project directories (`~/code`, `~/projects`, `~/src`, etc.)
+  - Searches the specified directory (or current directory) and subdirectories
   - Supports multiple config files per directory (`mutagen-<target>.yml` pattern)
   - Correlates project files with running sessions
 - **Push mode support**: Create one-way sync sessions (alpha → beta)
   - Push individual specs or entire projects
   - Automatically replaces two-way sessions when creating push
   - Clear visual indicators for push mode (⬆ arrow, "(push)" label)
-- **Automatic theme detection**: Adapts colors for light and dark terminal backgrounds
+- **Light and dark themes**: Defaults to light theme, dark theme available via `MUTAGUI_THEME=dark`
 - **Auto-refresh**: Session list and projects update every 3 seconds automatically
 - **Real-time activity indicators**:
   - Connection status icons (✓ connected, ⊗ disconnected, ⟳ scanning)
@@ -37,15 +37,9 @@ For more development tools, see: https://osteele.com/software/development-tools
 ## Prerequisites
 
 - [Mutagen](https://mutagen.io/) must be installed and in your PATH
-- Rust toolchain (for building from source)
+- Go 1.21+ (for building from source)
 
 ## Installation
-
-### From crates.io
-
-```bash
-cargo install mutagui
-```
 
 ### From Source
 
@@ -56,8 +50,8 @@ cd mutagui
 # Build and install
 just install
 
-# Or manually with cargo
-cargo install --path .
+# Or manually with Go
+go install .
 ```
 
 ## Usage
@@ -99,9 +93,8 @@ mutagui -d ~/projects
 ```
 
 The `--project-dir` option specifies where to start searching for `mutagen.yml` files. The application will:
-- Search the specified directory and its subdirectories
-- Walk up the directory tree to find project configuration directories
-- Still check user config directories (`~/.config/mutagen/projects/`, `~/.mutagen/projects/`)
+- Search the specified directory and its subdirectories (up to 4 levels deep)
+- Also check user config directories (`~/.config/mutagen/projects/`, `~/.mutagen/projects/`)
 
 ## Interface Overview
 
@@ -221,29 +214,28 @@ export MUTAGUI_EDITOR_IS_GUI=true   # Force GUI behavior
 export MUTAGUI_EDITOR_IS_GUI=false  # Force terminal behavior
 ```
 
+### Theme
+
+The application defaults to light theme. To use dark theme:
+```bash
+export MUTAGUI_THEME=dark
+```
+
 ## Configuration Files
 
 The application automatically discovers `mutagen.yml` project files to help you manage your sync sessions. Understanding where these files are searched can help you organize your projects effectively.
 
 ### Search Locations
 
-Starting from the base directory (current directory by default, or specified with `--project-dir`), the application searches in the following order:
+Starting from the base directory (current directory by default, or specified with `--project-dir`), the application searches for `mutagen.yml` and `mutagen-*.yml` files:
 
-1. **Base directory patterns:**
-   - `mutagen.yml`, `mutagen-*.yml`
-   - `.mutagen.yml`, `.mutagen-*.yml` (hidden variants)
+1. **Base directory and subdirectories** (up to 4 levels deep):
+   - `mutagen.yml`, `mutagen.yaml`
+   - `mutagen-*.yml`, `mutagen-*.yaml` (target-specific configurations)
 
-2. **Subdirectories:**
-   - `mutagen/*.yml`, `.mutagen/*.yml`
-   - `config/*.yml`, `conf/*.yml`
-
-3. **Parent directories:**
-   - Walks up the directory tree to filesystem root or home directory
-   - Checks for `mutagen/`, `.mutagen/`, `config/`, `conf/` subdirectories
-
-4. **User configuration directories:**
-   - `~/.config/mutagen/projects/*.yml`
-   - `~/.mutagen/projects/*.yml`
+2. **User configuration directories:**
+   - `~/.config/mutagen/projects/`
+   - `~/.mutagen/projects/`
 
 ### Supported File Naming Patterns
 
@@ -441,6 +433,39 @@ The application creates sessions with:
 - Regular expression patterns (`ignore: { regex: "pattern.*" }`)
 
 **Note:** Ignore patterns from `sync.defaults` are merged with session-specific patterns. Session-specific patterns are added to (not replacing) defaults.
+
+## Development
+
+This is a Go project using [tview](https://github.com/rivo/tview) for the terminal UI.
+
+### Building
+
+```bash
+# Build the binary
+just build
+
+# Or directly with Go
+go build -o mutagui .
+```
+
+### Running Tests
+
+```bash
+just test
+```
+
+### Code Quality
+
+```bash
+# Format code
+just format
+
+# Run linter
+just lint
+
+# Run all checks
+just check
+```
 
 ## Contributing
 

@@ -7,7 +7,7 @@
 ## Prerequisites
 
 - **Mutagen CLI** must be installed and available in PATH
-- Rust toolchain for building
+- Go 1.21+ for building
 
 ## Version Control
 
@@ -17,117 +17,122 @@ This project uses **Jujutsu (jj)** for version control (with Git as a backing st
 
 ### Building
 ```bash
-cargo build              # Debug build
-cargo build --release    # Optimized release build
+go build -o mutagui .   # Build binary
+just build              # Same as above
 ```
 
 ### Running
 ```bash
-cargo run                # Run in development mode
-cargo run --release      # Run optimized version
+go run .                # Run directly
+just run                # Same as above
 ```
 
 ### Testing
 ```bash
-cargo test               # Run all tests
+go test ./...           # Run all tests
+just test               # Same as above
 ```
 
 ### Code Quality
 ```bash
-cargo fmt                                                      # Format code
-cargo clippy                                                   # Run linter
-cargo fmt && cargo clippy --fix --allow-staged --allow-dirty  # Auto-fix issues
+gofmt -w .              # Format code
+go vet ./...            # Run linter
+just check              # Run format-check, lint, and test
+just fix                # Auto-fix formatting
 ```
 
 ### Installation
 ```bash
-cargo install --path .   # Install to ~/.cargo/bin/mutagui
+go install .            # Install to $GOPATH/bin/mutagui
+just install            # Same as above
 ```
 
 ## Architecture
 
-### Module Structure
+### Package Structure
 
 The application follows a modular architecture with clear separation of concerns:
 
-- **main.rs** - Entry point and event loop
-  - Sets up terminal (crossterm + ratatui)
-  - Runs async event loop with 100ms polling interval
-  - Handles keyboard events and auto-refresh triggers
+- **main.go** - Entry point and event loop
+  - Sets up terminal with tview
+  - Runs event loop with keyboard handling
+  - Handles auto-refresh triggers
   - Cleans up terminal on exit
   - Editor integration: Detects editor from `$VISUAL`, `$EDITOR`, or defaults to `vim`
   - Terminal mode switching: Properly suspends TUI mode when launching external editors
 
-- **app.rs** - Application state management
-  - `App` struct holds all application state (sessions, projects, selection, theme)
-  - Two view modes: `Sessions` (default) and `Projects`
+- **internal/app/app.go** - Application state management
+  - `App` struct holds all application state (sessions, projects, selection)
+  - Contains all session operations: start, pause, resume, flush, terminate
   - Auto-refresh logic: refreshes every 3 seconds when idle
-  - Session operations: pause, resume, flush, terminate
+  - Editor integration with GUI/terminal detection
 
-- **mutagen.rs** - Mutagen CLI integration
-  - `MutagenClient` wraps Mutagen CLI commands via `std::process::Command`
-  - Data models: `SyncSession`, `Endpoint`
+- **internal/mutagen/** - Mutagen CLI integration
+  - **types.go**: Data models (`SyncSession`, `Endpoint`, `Conflict`)
+  - **client.go**: `Client` wraps Mutagen CLI commands via `os/exec`
   - Parses JSON output from `mutagen sync list --template '{{json .}}'`
   - Endpoint status tracking: connected, scanned, file/directory counts
 
-- **project.rs** - Project file discovery and correlation
-  - Discovers `mutagen.yml` and `mutagen-*.yml` files across common project directories
+- **internal/project/project.go** - Project file discovery and correlation
+  - Discovers `mutagen.yml` and `mutagen-*.yml` files
   - Parses YAML config files to extract session definitions
   - Correlates project files with active sessions by matching names and paths
-  - Search paths include: current directory, `~/code/**`, `~/projects/**`, `~/src/**`, `~/.config/mutagen/projects/`
+  - Manages sync spec states (NotRunning, RunningTwoWay, RunningPush)
 
-- **theme.rs** - Color scheme detection
-  - Uses `terminal-light` crate to detect terminal background (light/dark)
-  - Provides two color schemes with appropriate contrast
-  - Theme is detected once at startup
+- **internal/config/config.go** - Configuration management
+  - Loads TOML config from standard locations
+  - Theme mode, refresh settings, project search paths
+  - Default values with user overrides
 
-- **ui.rs** - TUI rendering using ratatui
+- **internal/ui/** - TUI components
+  - **theme.go**: Color scheme definitions (light/dark themes)
+  - **selection.go**: Selection manager for navigating project/spec tree
+  - **view.go**: TUI rendering using tview
 
 ### Key Design Patterns
 
-**Async Runtime**: Uses Tokio for async operations, though most operations are synchronous wrappers around CLI commands.
+**Event-Driven UI**: Uses tview for the terminal UI with event capture for keyboard handling. All UI updates go through `QueueUpdateDraw` for thread safety.
 
 **CLI Integration**: All Mutagen operations shell out to the `mutagen` CLI binary rather than using a library. This means:
 - The application requires `mutagen` to be installed and in PATH
-- Operations are synchronous (wrapped in async functions)
+- Operations use context with timeout for cancellation
 - Errors are captured from stderr output
 
-**Auto-refresh**: The event loop checks `app.should_auto_refresh()` every 100ms. If 3+ seconds have elapsed since the last refresh, it automatically calls `refresh_sessions()`.
+**Auto-refresh**: A background goroutine ticks every N seconds (configurable) and refreshes sessions automatically.
 
-**Project Discovery**: The application searches multiple common project directory patterns to find `mutagen.yml` files. It attempts to correlate these configuration files with active sessions to provide a project-centric view.
+**Project Discovery**: The application searches configured paths to find `mutagen.yml` files. It correlates these configuration files with active sessions to provide a project-centric view.
 
-**State Management**: The `App` struct is the single source of truth for application state. All mutations go through `App` methods, which handle both the state change and any necessary CLI calls.
+**State Management**: The `App` struct is the single source of truth for application state. The `AppState` struct is shared with the view for rendering. All mutations go through `App` methods.
 
 ### Data Flow
 
-1. **Startup**: App initializes, detects theme, calls `refresh_sessions()`
+1. **Startup**: App initializes, detects theme, calls `LoadProjects()` and `RefreshSessions()`
 2. **Refresh cycle**:
    - Execute `mutagen sync list --template '{{json .}}'`
-   - Parse JSON into `Vec<SyncSession>`
-   - Discover project files from filesystem
-   - Correlate projects with active sessions
-   - Update `last_refresh` timestamp
+   - Parse JSON into `[]SyncSession`
+   - Update each project's specs with session data
+   - Update `LastRefresh` timestamp
 3. **User action** (e.g., pause):
-   - App method calls `MutagenClient` method
-   - CLI command executes
+   - App method calls `Client` method
+   - CLI command executes with timeout
    - Result updates status message
-   - Session list refreshes automatically
-4. **Rendering**: UI module reads from `App` state and renders using ratatui
+   - Session list refreshes
+4. **Rendering**: View reads from shared `AppState` and renders using tview
 
 ## Testing Considerations
 
 - **Mutagen dependency**: Tests that interact with actual Mutagen sessions require a running Mutagen daemon
-- **CLI mocking**: Consider mocking `Command` execution for unit tests
-- **Project discovery**: Tests may need to set up temporary file structures or mock glob results
+- **CLI mocking**: Consider creating mock implementations of the Client interface for unit tests
+- **Project discovery**: Tests may need to set up temporary file structures
 
 ## Common Development Tasks
 
 ### Adding a new keyboard command
 
-1. Add key handler in `main.rs::run_app()` match statement
-2. Add corresponding method to `App` in `app.rs` (if needed)
-3. If it modifies sessions, call `app.refresh_sessions().await?` after the operation
-4. Update help text in `ui.rs` (if applicable)
+1. Add key handler in `main.go` `handleInput()` function
+2. Add corresponding method to `App` in `internal/app/app.go` (if needed)
+3. If it modifies sessions, call `RefreshSessions()` after the operation
+4. Update help text in `internal/ui/view.go` (if applicable)
 
 For the complete keyboard bindings list, see README.md.
 
@@ -135,28 +140,26 @@ For the complete keyboard bindings list, see README.md.
 
 Editor launching uses hybrid GUI detection to determine terminal handling:
 - **GUI editors** (VS Code, Zed, etc.): TUI remains active, editor spawns without terminal disruption
-- **Terminal editors** (vim, nano, etc.): TUI suspends (disables raw mode, leaves alternate screen), then restores after editor exits
+- **Terminal editors** (vim, nano, etc.): TUI suspends using `Suspend()`, then resumes after editor exits
 
-Detection logic (`main.rs::is_gui_editor()`):
+Detection logic (`app.IsGUIEditor()`):
 1. User override via `MUTAGUI_EDITOR_IS_GUI` env var
 2. SSH detection (assumes terminal editor over SSH)
-3. Hardcoded list of ~20 GUI editors
-4. Hardcoded list of ~15 terminal editors
-5. macOS .app path detection
-6. Default: terminal editor (safe fallback)
+3. Hardcoded list of GUI editors
+4. Hardcoded list of terminal editors
+5. Default: terminal editor (safe fallback)
 
 ### Adding a new Mutagen operation
 
-1. Add method to `MutagenClient` in `mutagen.rs` following the existing pattern:
-   - Use `Command::new("mutagen")` with appropriate args
-   - Check `output.status.success()`
-   - Parse stderr for errors
-   - Return `Result<T>`
-2. Add wrapper method to `App` in `app.rs`
-3. Add keyboard binding in `main.rs`
+1. Add method to `Client` in `internal/mutagen/client.go` following the existing pattern:
+   - Use `exec.CommandContext` with timeout
+   - Capture combined output for errors
+   - Return appropriate error type
+2. Add wrapper method to `App` in `internal/app/app.go`
+3. Add keyboard binding in `main.go`
 
 ### Modifying the data model
 
-1. Update structs in `mutagen.rs` (add serde derive attributes)
+1. Update structs in `internal/mutagen/types.go` (add json tags)
 2. Test with actual `mutagen sync list --template '{{json .}}'` output
-3. Update display logic in `ui.rs` if needed
+3. Update display logic in `internal/ui/view.go` if needed
