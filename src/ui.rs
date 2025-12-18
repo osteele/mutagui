@@ -122,6 +122,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_conflict_detail(f, app);
     }
 
+    // Draw sync status overlay if viewing sync status
+    if app.viewing_sync_status {
+        draw_sync_status(f, app);
+    }
+
     // Draw help screen overlay if viewing help
     if app.viewing_help {
         draw_help_screen(f, app);
@@ -543,11 +548,20 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                     ];
 
                     // Add staging progress details if available
-                    let staging = session
-                        .beta
-                        .staging_progress
-                        .as_ref()
-                        .or(session.alpha.staging_progress.as_ref());
+                    // Determine direction: alpha staging = downloading, beta staging = uploading
+                    let (staging, direction) =
+                        if let Some(progress) = session.alpha.staging_progress.as_ref() {
+                            (Some(progress), Some("↓")) // Downloading to local
+                        } else if let Some(progress) = session.beta.staging_progress.as_ref() {
+                            (Some(progress), Some("↑")) // Uploading to remote
+                        } else {
+                            (None, None)
+                        };
+
+                    // Add direction indicator before percentage
+                    if let Some(dir) = direction {
+                        parts.push(format!(" {}", dir));
+                    }
 
                     if let Some(progress) = staging {
                         // Show percentage - prefer byte-based for granular progress on large files
@@ -595,6 +609,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                                     format_size(received),
                                     format_size(expected)
                                 ));
+                            }
+                        }
+
+                        // Show file count progress
+                        if let (Some(received), Some(expected)) =
+                            (progress.received_files, progress.expected_files)
+                        {
+                            if expected > 0 {
+                                parts.push(format!(" | {}/{} files", received, expected));
                             }
                         }
                     }
@@ -735,16 +758,16 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             .item("s", "Start")
             .item("t", "Terminate")
             .item("f", "Flush")
-            .item("p", "Push")
-            .item("Space", "Pause/Resume");
+            .item("P", "Push")
+            .item("p", "Pause/Resume");
     } else if is_spec_selected {
         // Spec-specific commands
         help_bar = help_bar
             .item("s", "Start")
             .item("t", "Terminate")
             .item("f", "Flush")
-            .item("p", "Push")
-            .item("Space", "Pause/Resume")
+            .item("P", "Push")
+            .item("p", "Pause/Resume")
             .item("c", "Conflicts");
     }
 
@@ -952,6 +975,210 @@ fn draw_conflict_detail(f: &mut Frame, app: &App) {
     }
 }
 
+fn draw_sync_status(f: &mut Frame, app: &App) {
+    use ratatui::layout::{Alignment, Margin};
+    use ratatui::widgets::Clear;
+
+    // Create a centered overlay area (70% width, 60% height)
+    let area = f.area();
+    let overlay_width = (area.width as f32 * 0.7) as u16;
+    let overlay_height = (area.height as f32 * 0.6) as u16;
+    let overlay_x = (area.width - overlay_width) / 2;
+    let overlay_y = (area.height - overlay_height) / 2;
+
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_width,
+        height: overlay_height,
+    };
+
+    f.render_widget(Clear, overlay_area);
+
+    // Get selected session info
+    let session_info = app.get_selected_spec().and_then(|(proj_idx, spec_idx)| {
+        app.projects.get(proj_idx).and_then(|project| {
+            project
+                .specs
+                .get(spec_idx)
+                .and_then(|spec| spec.running_session.as_ref())
+        })
+    });
+
+    let title = if let Some(session) = &session_info {
+        format!(" Sync Status: {} (Esc or 'i' to close) ", session.name)
+    } else {
+        " Sync Status (Esc or 'i' to close) ".to_string()
+    };
+
+    let overlay_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.color_scheme.help_key_fg))
+        .title(title)
+        .title_alignment(Alignment::Center)
+        .style(Style::default().bg(Color::White));
+
+    f.render_widget(overlay_block, overlay_area);
+
+    let inner_area = overlay_area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+
+    let theme = &app.color_scheme;
+
+    if let Some(session) = session_info {
+        let mut lines = vec![];
+
+        // Direction and status
+        let (direction, direction_text) = if session.alpha.staging_progress.is_some() {
+            ("↓", "Downloading (staging to local)")
+        } else if session.beta.staging_progress.is_some() {
+            ("↑", "Uploading (staging to remote)")
+        } else {
+            ("•", "Idle")
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled("  Direction:  ", Style::default().fg(theme.help_text_fg)),
+            Span::styled(
+                format!("{} {}", direction, direction_text),
+                Style::default()
+                    .fg(theme.help_key_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("  Status:     ", Style::default().fg(theme.help_text_fg)),
+            Span::styled(
+                session.status_text(),
+                Style::default().fg(theme.session_status_fg),
+            ),
+        ]));
+
+        lines.push(Line::from(""));
+
+        // Get staging progress
+        let staging = session
+            .alpha
+            .staging_progress
+            .as_ref()
+            .or(session.beta.staging_progress.as_ref());
+
+        if let Some(progress) = staging {
+            // Current file
+            if let Some(path) = &progress.path {
+                lines.push(Line::from(vec![
+                    Span::styled("  Current file: ", Style::default().fg(theme.help_text_fg)),
+                    Span::styled(path.clone(), Style::default().fg(theme.session_name_fg)),
+                ]));
+            }
+
+            // File progress bar
+            if let (Some(received), Some(expected)) =
+                (progress.received_size, progress.expected_size)
+            {
+                if expected > 0 {
+                    let pct = ((received * 100) / expected).min(100) as usize;
+                    let bar_width = 30;
+                    let filled = (pct * bar_width) / 100;
+                    let empty = bar_width - filled;
+                    let bar = format!("[{}{}] {}%", "█".repeat(filled), "░".repeat(empty), pct);
+                    lines.push(Line::from(vec![
+                        Span::styled("  File progress: ", Style::default().fg(theme.help_text_fg)),
+                        Span::styled(bar, Style::default().fg(theme.status_running_fg)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("                 ", Style::default().fg(theme.help_text_fg)),
+                        Span::styled(
+                            format!("{} / {}", format_size(received), format_size(expected)),
+                            Style::default().fg(theme.session_status_fg),
+                        ),
+                    ]));
+                }
+            }
+
+            lines.push(Line::from(""));
+
+            // Overall file count
+            if let (Some(received), Some(expected)) =
+                (progress.received_files, progress.expected_files)
+            {
+                lines.push(Line::from(vec![
+                    Span::styled("  Overall:    ", Style::default().fg(theme.help_text_fg)),
+                    Span::styled(
+                        format!("{} / {} files", received, expected),
+                        Style::default().fg(theme.session_status_fg),
+                    ),
+                ]));
+            }
+
+            // Total transferred
+            if let Some(total) = progress.total_received_size {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "  Total transferred: ",
+                        Style::default().fg(theme.help_text_fg),
+                    ),
+                    Span::styled(
+                        format_size(total),
+                        Style::default().fg(theme.session_status_fg),
+                    ),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                "  No active transfer",
+                Style::default().fg(theme.session_status_fg),
+            )]));
+        }
+
+        lines.push(Line::from(""));
+
+        // Endpoint status
+        let alpha_status = format!(
+            "{} connected, {} scanned",
+            if session.alpha.connected {
+                "✓"
+            } else {
+                "✗"
+            },
+            if session.alpha.scanned { "✓" } else { "✗" }
+        );
+        let beta_status = format!(
+            "{} connected, {} scanned",
+            if session.beta.connected { "✓" } else { "✗" },
+            if session.beta.scanned { "✓" } else { "✗" }
+        );
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Alpha (local):  ",
+                Style::default().fg(theme.help_text_fg),
+            ),
+            Span::styled(alpha_status, Style::default().fg(theme.session_alpha_fg)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Beta (remote):  ",
+                Style::default().fg(theme.help_text_fg),
+            ),
+            Span::styled(beta_status, Style::default().fg(theme.session_beta_fg)),
+        ]));
+
+        let content = Paragraph::new(lines)
+            .style(Style::default().bg(Color::White))
+            .wrap(Wrap { trim: false });
+        f.render_widget(content, inner_area);
+    } else {
+        let error = Paragraph::new("No running session selected")
+            .style(Style::default().fg(theme.session_status_fg))
+            .alignment(Alignment::Center);
+        f.render_widget(error, inner_area);
+    }
+}
+
 fn summarize_conflict_changes(changes: &[crate::mutagen::Change]) -> String {
     const MAX_DISPLAY: usize = 3;
     if changes.is_empty() {
@@ -1125,7 +1352,7 @@ fn draw_help_screen(f: &mut Frame, app: &App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  p", Style::default().fg(theme.help_key_fg)),
+            Span::styled("  P", Style::default().fg(theme.help_key_fg)),
             Span::raw("             "),
             Span::styled(
                 "Create push sessions for all specs",
@@ -1133,8 +1360,8 @@ fn draw_help_screen(f: &mut Frame, app: &App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Space", Style::default().fg(theme.help_key_fg)),
-            Span::raw("         "),
+            Span::styled("  p/Space", Style::default().fg(theme.help_key_fg)),
+            Span::raw("       "),
             Span::styled(
                 "Pause/resume all running specs",
                 Style::default().fg(theme.help_text_fg),
@@ -1181,7 +1408,7 @@ fn draw_help_screen(f: &mut Frame, app: &App) {
             Span::styled("Flush this spec", Style::default().fg(theme.help_text_fg)),
         ]),
         Line::from(vec![
-            Span::styled("  p", Style::default().fg(theme.help_key_fg)),
+            Span::styled("  P", Style::default().fg(theme.help_key_fg)),
             Span::raw("             "),
             Span::styled(
                 "Create push session (replaces two-way if running)",
@@ -1189,8 +1416,8 @@ fn draw_help_screen(f: &mut Frame, app: &App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Space", Style::default().fg(theme.help_key_fg)),
-            Span::raw("         "),
+            Span::styled("  p/Space", Style::default().fg(theme.help_key_fg)),
+            Span::raw("       "),
             Span::styled("Pause/resume spec", Style::default().fg(theme.help_text_fg)),
         ]),
         Line::from(vec![

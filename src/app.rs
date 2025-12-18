@@ -61,6 +61,7 @@ pub struct App {
     pub session_display_mode: SessionDisplayMode,
     pub viewing_conflicts: bool,
     pub viewing_help: bool,
+    pub viewing_sync_status: bool,
     pub has_refresh_error: bool, // Track if last refresh failed to prevent error loops
     pub blocking_op: Option<BlockingOperation>,
     config: Config,
@@ -96,6 +97,7 @@ impl App {
             session_display_mode,
             viewing_conflicts: false,
             viewing_help: false,
+            viewing_sync_status: false,
             has_refresh_error: false,
             blocking_op: None,
             config,
@@ -1071,6 +1073,30 @@ impl App {
 
     pub fn toggle_help_view(&mut self) {
         self.viewing_help = !self.viewing_help;
+    }
+
+    pub fn toggle_sync_status_view(&mut self) {
+        // If already viewing, just close
+        if self.viewing_sync_status {
+            self.viewing_sync_status = false;
+            return;
+        }
+
+        // Opening requires a running spec to be selected
+        if let Some((proj_idx, spec_idx)) = self.get_selected_spec() {
+            if let Some(project) = self.projects.get(proj_idx) {
+                if let Some(spec) = project.specs.get(spec_idx) {
+                    if spec.running_session.is_some() {
+                        self.viewing_sync_status = true;
+                    } else {
+                        self.status_message =
+                            Some(StatusMessage::error("Selected spec is not running"));
+                    }
+                }
+            }
+        } else {
+            self.status_message = Some(StatusMessage::error("Select a spec to view sync status"));
+        }
     }
 
     pub fn get_selected_spec_conflicts(&self) -> Option<&Vec<crate::mutagen::Conflict>> {

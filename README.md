@@ -118,7 +118,7 @@ The TUI displays a hierarchical tree view of projects and their sync specs:
 │   ▶ sync-to-orbit                     📦  ✓~/code/starship ⇄ ✓orbit:/home/. │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌─ Help ───────────────────────────────────────────────────────────────────────┐
-│ ↑/↓/j/k Nav │ h/l/↵ Fold │ r Refresh │ e Edit │ s Start/Stop │ p Push │...  │
+│ ↑/↓/j/k Nav │ h/l/↵ Fold │ r Refresh │ e Edit │ s Start/Stop │ P Push │...  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌─ Status ─────────────────────────────────────────────────────────────────────┐
 │ Created 1 push session(s) | Last refresh: 12:34:56                           │
@@ -129,7 +129,8 @@ The TUI displays a hierarchical tree view of projects and their sync specs:
 - **Fold state**: `▼` (expanded) / `▶` (collapsed)
 - **Project status**: `✓` (active) / `○` (inactive)
 - **Spec status**: `▶` (running) / `⏸` (paused) / `○` (not running)
-- **Direction**: `⇄` (two-way) / `⬆` (push mode, bold/colored)
+- **Sync direction**: `⇄` (two-way) / `⬆` (push mode, bold/colored)
+- **Transfer direction**: `↓` (downloading) / `↑` (uploading) - shown during staging
 - **Push mode label**: Specs show `(push)` suffix when in push mode
 - **Endpoint status**: `✓` (connected) / `⟳` (scanning) / `⊗` (disconnected)
 - **Session activity**: `👁` (watching) / `📦` (staging) / `⚖` (reconciling) / etc.
@@ -159,8 +160,8 @@ The TUI displays a hierarchical tree view of projects and their sync specs:
 | `s` | Start all specs in project |
 | `t` | Terminate all specs in project |
 | `f` | Flush all specs in project |
-| `p` | Create push sessions for all specs |
-| `Space` | Pause/resume all running specs |
+| `P` | Create push sessions for all specs |
+| `p` / `Space` | Pause/resume all running specs |
 | `u` | Resume all paused specs |
 
 #### Spec Actions (when individual spec selected)
@@ -169,10 +170,11 @@ The TUI displays a hierarchical tree view of projects and their sync specs:
 | `s` | Start this spec |
 | `t` | Terminate this spec |
 | `f` | Flush this spec |
-| `p` | Create push session (replaces two-way if running) |
-| `Space` | Pause/resume spec |
+| `P` | Create push session (replaces two-way if running) |
+| `p` / `Space` | Pause/resume spec |
 | `u` | Resume paused spec |
 | `c` | View conflicts |
+| `i` | View sync status details |
 
 ### Editor Integration
 
@@ -315,6 +317,36 @@ The Status area shows progress percentage during staging (e.g., "Staging (45%)")
 
 - Current status message
 - Last refresh timestamp
+- When a staging session is selected, shows transfer details:
+  - Direction indicator: `↓` (downloading to local) or `↑` (uploading to remote)
+  - Progress percentage and current file name
+  - File size progress: `[16.8M/248.9M]`
+  - File count: `3/47 files`
+
+### Sync Status View
+
+Press `i` when a running spec is selected to open a detailed sync status overlay:
+
+```
+╭─ Sync Status: studio-research (Esc or 'i' to close) ───────────────╮
+│                                                                     │
+│  Direction:  ↓ Downloading (staging to local)                       │
+│  Status:     Staging                                                │
+│                                                                     │
+│  Current file: LM2/checkpoints/model.safetensors                    │
+│  File progress: [████████░░░░░░░░░░░░░░░░░░░░░░] 27%                │
+│                 67.2 MB / 248.9 MB                                  │
+│                                                                     │
+│  Overall:    3 / 47 files                                           │
+│  Total transferred: 67.2 MB                                         │
+│                                                                     │
+│  Alpha (local):  ✓ connected, ✓ scanned                             │
+│  Beta (remote):  ✓ connected, ✓ scanned                             │
+│                                                                     │
+╰─────────────────────────────────────────────────────────────────────╯
+```
+
+Press `Esc` or `i` again to close the overlay.
 
 ## Push Sessions
 

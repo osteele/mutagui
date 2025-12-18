@@ -148,7 +148,7 @@ pub async fn handle_key_event<B: Backend>(
         return Ok(KeyAction::Quit);
     }
 
-    // Handle Escape to close overlays (help or conflict view)
+    // Handle Escape to close overlays (help, conflict, or sync status view)
     if key.code == KeyCode::Esc {
         if app.viewing_help {
             app.toggle_help_view();
@@ -156,6 +156,10 @@ pub async fn handle_key_event<B: Backend>(
         }
         if app.viewing_conflicts {
             app.toggle_conflict_view();
+            return Ok(KeyAction::Continue);
+        }
+        if app.viewing_sync_status {
+            app.toggle_sync_status_view();
             return Ok(KeyAction::Continue);
         }
     }
@@ -212,11 +216,11 @@ pub async fn handle_key_event<B: Backend>(
                 Ok(KeyAction::Continue)
             }
         }
-        KeyCode::Char('p') => {
-            handle_pause_or_push(app, terminal).await?;
+        KeyCode::Char('P') => {
+            handle_push(app, terminal).await?;
             Ok(KeyAction::Refresh)
         }
-        KeyCode::Char(' ') => {
+        KeyCode::Char('p') | KeyCode::Char(' ') => {
             handle_toggle_pause(app, terminal).await?;
             Ok(KeyAction::Refresh)
         }
@@ -230,6 +234,10 @@ pub async fn handle_key_event<B: Backend>(
         }
         KeyCode::Char('c') => {
             app.toggle_conflict_view();
+            Ok(KeyAction::Continue)
+        }
+        KeyCode::Char('i') => {
+            app.toggle_sync_status_view();
             Ok(KeyAction::Continue)
         }
         KeyCode::Char('?') => {
@@ -392,8 +400,8 @@ async fn handle_resume<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) ->
     Ok(())
 }
 
-/// Handle 'p' key - create push session.
-async fn handle_pause_or_push<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
+/// Handle 'P' key - create push session.
+async fn handle_push<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) -> Result<()> {
     if app.selection.is_spec_selected() {
         // Individual spec selected: create push session (replaces two-way if running)
         app.blocking_op = Some(BlockingOperation {
