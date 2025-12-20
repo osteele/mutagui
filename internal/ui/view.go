@@ -216,6 +216,7 @@ func (v *View) renderProjectHeader(proj *project.Project, theme ColorScheme) str
 	pausedCount := 0
 	pushCount := 0
 	conflictCount := 0
+	disconnectedCount := 0
 
 	for _, spec := range proj.Specs {
 		if spec.IsRunning() {
@@ -230,6 +231,10 @@ func (v *View) renderProjectHeader(proj *project.Project, theme ColorScheme) str
 		}
 		if spec.RunningSession != nil {
 			conflictCount += spec.RunningSession.ConflictCount()
+			// Count specs with disconnected endpoints
+			if !spec.RunningSession.Alpha.Connected || !spec.RunningSession.Beta.Connected {
+				disconnectedCount++
+			}
 		}
 	}
 
@@ -255,19 +260,24 @@ func (v *View) renderProjectHeader(proj *project.Project, theme ColorScheme) str
 	} else if runningCount == len(proj.Specs) {
 		if pushCount > 0 {
 			if pushCount == runningCount {
-				statusText = "Running (all push)"
+				statusText = "Running (all one-way)"
 			} else {
-				statusText = fmt.Sprintf("Running (%d push)", pushCount)
+				statusText = fmt.Sprintf("Running (%d one-way)", pushCount)
 			}
 		} else {
 			statusText = "Running"
 		}
 	} else {
 		if pushCount > 0 {
-			statusText = fmt.Sprintf("%d/%d running (%d push)", runningCount, len(proj.Specs), pushCount)
+			statusText = fmt.Sprintf("%d/%d running (%d one-way)", runningCount, len(proj.Specs), pushCount)
 		} else {
 			statusText = fmt.Sprintf("%d/%d running", runningCount, len(proj.Specs))
 		}
+	}
+
+	// Append connection issues to status
+	if disconnectedCount > 0 {
+		statusText += fmt.Sprintf(", %d waiting", disconnectedCount)
 	}
 
 	result := fmt.Sprintf("[%s]%s[-] [%s]%s[-] [%s::b]%-30s[-:-:-]  %s",
@@ -314,12 +324,12 @@ func (v *View) renderSpecRow(proj *project.Project, spec *project.SyncSpec, them
 
 	case project.RunningTwoWay, project.RunningPush:
 		if spec.RunningSession == nil {
-			return fmt.Sprintf("%s[%s]▶[-] %s",
+			return fmt.Sprintf("%s[%s]●[-] %s",
 				indent, colorToTag(theme.StatusRunningFG), spec.Name)
 		}
 
 		session := spec.RunningSession
-		statusIcon := "▶"
+		statusIcon := "●"
 		statusColor := theme.StatusRunningFG
 		if session.Paused {
 			statusIcon = "⏸"
@@ -328,7 +338,7 @@ func (v *View) renderSpecRow(proj *project.Project, spec *project.SyncSpec, them
 
 		nameWithMode := spec.Name
 		if spec.State == project.RunningPush {
-			nameWithMode = spec.Name + " (push)"
+			nameWithMode = spec.Name + " (one-way)"
 		}
 
 		var result string
@@ -399,7 +409,18 @@ func (v *View) UpdateStatus() {
 	var text string
 	var color tcell.Color = theme.StatusMessageFG
 
-	if v.State.StatusMessage != nil {
+	// Check if we have a spec selected with a running session
+	projIdx, specIdx := v.State.Selection.SelectedSpec()
+	hasSelectedSpec := projIdx >= 0 && specIdx >= 0
+
+	// Determine if status message is "important" (should override session status)
+	hasImportantStatus := v.State.StatusMessage != nil &&
+		(v.State.StatusMessage.Type == StatusError ||
+			v.State.StatusMessage.Type == StatusWarning ||
+			(v.State.StatusMessage.Type == StatusInfo && v.State.StatusMessage.Text != "Sessions refreshed"))
+
+	if hasImportantStatus {
+		// Show important status messages
 		text = v.State.StatusMessage.Text
 		switch v.State.StatusMessage.Type {
 		case StatusError:
@@ -407,14 +428,18 @@ func (v *View) UpdateStatus() {
 		case StatusWarning:
 			color = theme.StatusPausedFG
 		}
-	} else if projIdx, specIdx := v.State.Selection.SelectedSpec(); projIdx >= 0 && specIdx >= 0 {
+	} else if hasSelectedSpec {
+		// Show detailed session status when spec is selected
 		proj := v.State.Projects[projIdx]
 		spec := &proj.Specs[specIdx]
 		if spec.RunningSession != nil {
-			text = fmt.Sprintf("%s: %s", spec.RunningSession.Name, spec.RunningSession.StatusText())
+			text = v.buildSessionStatus(spec.RunningSession)
 		} else {
 			text = fmt.Sprintf("%s: Not running", spec.Name)
 		}
+	} else if v.State.StatusMessage != nil {
+		// Show unimportant status messages when nothing important to show
+		text = v.State.StatusMessage.Text
 	} else {
 		text = "Ready"
 	}
@@ -424,6 +449,90 @@ func (v *View) UpdateStatus() {
 	}
 
 	v.Status.SetText(fmt.Sprintf("[%s]%s[-]", colorToTag(color), text))
+}
+
+// buildSessionStatus builds detailed status text for a running session,
+// including direction, percentage, file progress, and conflicts.
+func (v *View) buildSessionStatus(session *mutagen.SyncSession) string {
+	var parts []string
+
+	// Start with session name and status
+	parts = append(parts, session.Name, ": ", session.StatusText())
+
+	// Determine direction and staging progress
+	var staging *mutagen.StagingProgress
+	var direction string
+
+	if session.Alpha.StagingProgress != nil {
+		staging = session.Alpha.StagingProgress
+		direction = "↓" // Downloading to local (alpha)
+	} else if session.Beta.StagingProgress != nil {
+		staging = session.Beta.StagingProgress
+		direction = "↑" // Uploading to remote (beta)
+	}
+
+	// Add direction indicator
+	if direction != "" {
+		parts = append(parts, " ", direction)
+	}
+
+	// Add staging progress details if available
+	if staging != nil {
+		// Calculate percentage - prefer byte-based for granular progress on large files
+		var pct *uint64
+		if staging.ReceivedSize != nil && staging.ExpectedSize != nil && *staging.ExpectedSize > 0 {
+			percentage := (*staging.ReceivedSize * 100) / *staging.ExpectedSize
+			if percentage > 100 {
+				percentage = 100
+			}
+			pct = &percentage
+		} else if staging.ReceivedFiles != nil && staging.ExpectedFiles != nil && *staging.ExpectedFiles > 0 {
+			percentage := (*staging.ReceivedFiles * 100) / *staging.ExpectedFiles
+			if percentage > 100 {
+				percentage = 100
+			}
+			pct = &percentage
+		}
+
+		if pct != nil {
+			parts = append(parts, fmt.Sprintf(" (%d%%)", *pct))
+		}
+
+		// Show current file being copied
+		if staging.Path != nil && *staging.Path != "" {
+			// Extract just the filename for brevity
+			filename := *staging.Path
+			if lastSlash := strings.LastIndex(filename, "/"); lastSlash >= 0 {
+				filename = filename[lastSlash+1:]
+			}
+			parts = append(parts, " | ", filename)
+		}
+
+		// Show file size if available
+		if staging.ReceivedSize != nil && staging.ExpectedSize != nil && *staging.ExpectedSize > 0 {
+			parts = append(parts, fmt.Sprintf(" [%s/%s]",
+				formatBytes(*staging.ReceivedSize),
+				formatBytes(*staging.ExpectedSize)))
+		}
+
+		// Show file count progress
+		if staging.ReceivedFiles != nil && staging.ExpectedFiles != nil && *staging.ExpectedFiles > 0 {
+			parts = append(parts, fmt.Sprintf(" | %d/%d files",
+				*staging.ReceivedFiles, *staging.ExpectedFiles))
+		}
+	}
+
+	// Add conflict count if any
+	if session.HasConflicts() {
+		conflictCount := session.ConflictCount()
+		conflictText := "conflict"
+		if conflictCount > 1 {
+			conflictText = "conflicts"
+		}
+		parts = append(parts, fmt.Sprintf(" | %d %s", conflictCount, conflictText))
+	}
+
+	return strings.Join(parts, "")
 }
 
 // ShowHelpModal displays the help screen.
@@ -477,7 +586,7 @@ func (v *View) HideHelpModal() {
 }
 
 // ShowConflictModal displays conflicts for the selected spec.
-func (v *View) ShowConflictModal(conflicts []mutagen.Conflict) {
+func (v *View) ShowConflictModal(conflicts []mutagen.Conflict, session *mutagen.SyncSession) {
 	theme := v.State.ColorScheme
 
 	var text string
@@ -489,9 +598,36 @@ func (v *View) ShowConflictModal(conflicts []mutagen.Conflict) {
 		text += "Press Esc or 'c' to close this view\n\n"
 
 		for _, conflict := range conflicts {
-			text += fmt.Sprintf("[%s::b]Root:[-:-:-] [%s]%s[-]\n",
-				colorToTag(theme.SessionNameFG),
-				colorToTag(theme.SessionAlphaFG), conflict.Root)
+			// Show full paths to the conflicting file/directory
+			if session != nil {
+				alphaPath := session.AlphaDisplay()
+				betaPath := session.BetaDisplay()
+				if conflict.Root != "" && conflict.Root != "." {
+					// Append conflict path to endpoint paths
+					if !strings.HasSuffix(alphaPath, "/") {
+						alphaPath += "/"
+					}
+					if !strings.HasSuffix(betaPath, "/") {
+						betaPath += "/"
+					}
+					alphaPath += conflict.Root
+					betaPath += conflict.Root
+				}
+
+				text += fmt.Sprintf("[%s::b]Alpha (α):[-:-:-] [%s]%s[-]\n",
+					colorToTag(theme.SessionAlphaFG),
+					colorToTag(theme.SessionAlphaFG),
+					alphaPath)
+				text += fmt.Sprintf("[%s::b]Beta (β):[-:-:-]  [%s]%s[-]\n",
+					colorToTag(theme.SessionBetaFG),
+					colorToTag(theme.SessionBetaFG),
+					betaPath)
+			} else {
+				// Fallback if no session - just show root
+				text += fmt.Sprintf("[%s::b]Root:[-:-:-] [%s]%s[-]\n",
+					colorToTag(theme.SessionNameFG),
+					colorToTag(theme.SessionAlphaFG), conflict.Root)
+			}
 			text += fmt.Sprintf("  α %d / β %d changes\n",
 				len(conflict.AlphaChanges), len(conflict.BetaChanges))
 

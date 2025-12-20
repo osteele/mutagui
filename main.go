@@ -216,7 +216,8 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 			} else {
 				mainApp.ToggleConflictView()
 				conflicts := mainApp.GetSelectedSpecConflicts()
-				view.ShowConflictModal(conflicts)
+				session := mainApp.GetSelectedSession()
+				view.ShowConflictModal(conflicts, session)
 			}
 			return nil
 
@@ -256,6 +257,15 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 			return nil
 
 		case 's':
+			// Set immediate feedback
+			if mainApp.State.Selection.IsSpecSelected() {
+				if projIdx, specIdx := mainApp.GetSelectedSpec(); projIdx >= 0 && specIdx >= 0 {
+					mainApp.SetStatus(ui.StatusInfo, "Starting "+mainApp.State.Projects[projIdx].Specs[specIdx].Name+"...")
+				}
+			} else if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
+				mainApp.SetStatus(ui.StatusInfo, "Starting "+mainApp.State.Projects[projIdx].File.DisplayName()+"...")
+			}
+			view.UpdateStatus()
 			go func() {
 				if mainApp.State.Selection.IsSpecSelected() {
 					mainApp.StartSelectedSpec(ctx)
@@ -271,6 +281,15 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 			return nil
 
 		case 't':
+			// Set immediate feedback
+			if mainApp.State.Selection.IsSpecSelected() {
+				if projIdx, specIdx := mainApp.GetSelectedSpec(); projIdx >= 0 && specIdx >= 0 {
+					mainApp.SetStatus(ui.StatusInfo, "Terminating "+mainApp.State.Projects[projIdx].Specs[specIdx].Name+"...")
+				}
+			} else if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
+				mainApp.SetStatus(ui.StatusInfo, "Terminating "+mainApp.State.Projects[projIdx].File.DisplayName()+"...")
+			}
+			view.UpdateStatus()
 			go func() {
 				mainApp.TerminateSelected(ctx)
 				mainApp.RefreshSessions(ctx)
@@ -282,6 +301,15 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 			return nil
 
 		case 'f':
+			// Set immediate feedback
+			if mainApp.State.Selection.IsSpecSelected() {
+				if projIdx, specIdx := mainApp.GetSelectedSpec(); projIdx >= 0 && specIdx >= 0 {
+					mainApp.SetStatus(ui.StatusInfo, "Flushing "+mainApp.State.Projects[projIdx].Specs[specIdx].Name+"...")
+				}
+			} else if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
+				mainApp.SetStatus(ui.StatusInfo, "Flushing "+mainApp.State.Projects[projIdx].File.DisplayName()+"...")
+			}
+			view.UpdateStatus()
 			go func() {
 				mainApp.FlushSelected(ctx)
 				mainApp.RefreshSessions(ctx)
@@ -315,6 +343,15 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 			return nil
 
 		case 'P':
+			// Set immediate feedback
+			if mainApp.State.Selection.IsSpecSelected() {
+				if projIdx, specIdx := mainApp.GetSelectedSpec(); projIdx >= 0 && specIdx >= 0 {
+					mainApp.SetStatus(ui.StatusInfo, "Creating push session for "+mainApp.State.Projects[projIdx].Specs[specIdx].Name+"...")
+				}
+			} else if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
+				mainApp.SetStatus(ui.StatusInfo, "Creating push sessions for "+mainApp.State.Projects[projIdx].File.DisplayName()+"...")
+			}
+			view.UpdateStatus()
 			go func() {
 				if mainApp.State.Selection.IsSpecSelected() {
 					mainApp.PushSelectedSpec(ctx)

@@ -344,8 +344,3 @@ func (p *Project) UpdateFromSessions(sessions []mutagen.SyncSession) {
 		spec.RunningSession = nil
 	}
 }
-
-// GetSessionLabel returns the label used to identify sessions belonging to this project.
-func (p *Project) GetSessionLabel() string {
-	return "project=" + p.File.Path
-}

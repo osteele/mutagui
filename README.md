@@ -103,12 +103,12 @@ The TUI displays a hierarchical tree view of projects and their sync specs:
 ```
 ┌─ Sync Projects ─────────────────────────────────────────────────────────────┐
 │ ▼ ✓ apollo-research               2/3 running (1 push)                      │
-│   ▶ apollo-research (push)           👁  ✓~/code/research ⬆ ✓apollo:/data/. │
-│   ▶ apollo-research-tools             👁  ✓~/code/tools ⇄ ✓apollo:/data/... │
+│   ● apollo-research (push)           👁  ✓~/code/research ⬆ ✓apollo:/data/. │
+│   ● apollo-research-tools             👁  ✓~/code/tools ⇄ ✓apollo:/data/... │
 │   ○ apollo-datasets                   Not running                            │
 │ ▶ ○ mercury-ml                     0/2 running                               │
-│ ▼ ✓ starship-dev                  1/1 running  ⚠ 3 conflicts               │
-│   ▶ sync-to-orbit                     📦  ✓~/code/starship ⇄ ✓orbit:/home/. │
+│ ▼ ✓ starship-dev                  1/1 running, 1 waiting  ⚠ 3 conflicts    │
+│   ● sync-to-orbit                     📦  ✓~/code/starship ⇄ ⊗orbit:/home/. │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌─ Help ───────────────────────────────────────────────────────────────────────┐
 │ ↑/↓/j/k Nav │ h/l/↵ Fold │ r Refresh │ e Edit │ s Start/Stop │ P Push │...  │
@@ -121,7 +121,7 @@ The TUI displays a hierarchical tree view of projects and their sync specs:
 **Visual Indicators:**
 - **Fold state**: `▼` (expanded) / `▶` (collapsed)
 - **Project status**: `✓` (active) / `○` (inactive)
-- **Spec status**: `▶` (running) / `⏸` (paused) / `○` (not running)
+- **Spec status**: `●` (running) / `⏸` (paused) / `○` (not running)
 - **Sync direction**: `⇄` (two-way) / `⬆` (push mode, bold/colored)
 - **Transfer direction**: `↓` (downloading) / `↑` (uploading) - shown during staging
 - **Push mode label**: Specs show `(push)` suffix when in push mode
@@ -262,9 +262,10 @@ Shows all projects and their sync specs in a tree structure:
   - Project name (e.g., `mutagen-apollo`, `starship-dev`)
   - Running status: "Running", "Not running", or "X/Y running"
   - Push mode count when applicable: "(2 push)"
+  - Connection issues when present: ", 1 waiting" (disconnected endpoints)
   - Conflict indicator when present: "⚠ 3 conflicts"
 - **Sync specs** (shown when project is expanded):
-  - Status icon: ▶ (running), ⏸ (paused), or ○ (not running)
+  - Status icon: ● (running), ⏸ (paused), or ○ (not running)
   - Spec name with push mode label: `sync-name (push)`
   - Session status icon: 👁 (watching), 📦 (staging), ⚖ (reconciling), etc.
   - Alpha endpoint with connection status and path

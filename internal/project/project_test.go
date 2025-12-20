@@ -229,17 +229,6 @@ func TestProject_UpdateFromSessions_NoMatch(t *testing.T) {
 	}
 }
 
-func TestProject_GetSessionLabel(t *testing.T) {
-	proj := &Project{
-		File: ProjectFile{Path: "/home/user/project/mutagen.yml"},
-	}
-
-	want := "project=/home/user/project/mutagen.yml"
-	if got := proj.GetSessionLabel(); got != want {
-		t.Errorf("GetSessionLabel() = %q, want %q", got, want)
-	}
-}
-
 func TestLoadProjectFile(t *testing.T) {
 	// Create a temporary file
 	tmpDir := t.TempDir()
