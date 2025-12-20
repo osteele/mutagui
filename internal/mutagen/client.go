@@ -107,9 +107,10 @@ func (c *Client) ListSessions(ctx context.Context) ([]SyncSession, error) {
 
 // SessionOptions contains optional settings for creating a sync session.
 type SessionOptions struct {
-	Mode      string   // Sync mode (e.g., "two-way-safe", "one-way-replica")
-	Ignore    []string // Paths to ignore
-	IgnoreVCS *bool    // Whether to ignore VCS directories
+	Mode        string   // Sync mode (e.g., "two-way-safe", "one-way-replica")
+	Ignore      []string // Paths to ignore
+	IgnoreVCS   *bool    // Whether to ignore VCS directories
+	SymlinkMode string   // Symlink mode (ignore, portable, posix-raw)
 }
 
 // CreateSession creates a new sync session with the given name and endpoints.
@@ -131,6 +132,9 @@ func (c *Client) CreateSession(ctx context.Context, name, alpha, beta string, op
 		if opts.IgnoreVCS != nil && !*opts.IgnoreVCS {
 			args = append(args, "--no-ignore-vcs")
 		}
+		if opts.SymlinkMode != "" {
+			args = append(args, "--symlink-mode", opts.SymlinkMode)
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, "mutagen", args...)
@@ -141,13 +145,23 @@ func (c *Client) CreateSession(ctx context.Context, name, alpha, beta string, op
 }
 
 // CreatePushSession creates a one-way sync session (alpha to beta).
-func (c *Client) CreatePushSession(ctx context.Context, name, alpha, beta string, ignore []string) error {
+func (c *Client) CreatePushSession(ctx context.Context, name, alpha, beta string, opts *SessionOptions) error {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	args := []string{"sync", "create", alpha, beta, "--name", name, "--sync-mode", "one-way-replica"}
-	for _, pattern := range ignore {
-		args = append(args, "--ignore", pattern)
+
+	// Apply session options (except mode, which is always one-way-replica for push)
+	if opts != nil {
+		for _, pattern := range opts.Ignore {
+			args = append(args, "--ignore", pattern)
+		}
+		if opts.IgnoreVCS != nil && !*opts.IgnoreVCS {
+			args = append(args, "--no-ignore-vcs")
+		}
+		if opts.SymlinkMode != "" {
+			args = append(args, "--symlink-mode", opts.SymlinkMode)
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, "mutagen", args...)

@@ -259,8 +259,13 @@ func (a *App) TerminateSelected(ctx context.Context) {
 		projIdx, specIdx := a.GetSelectedSpec()
 		if projIdx >= 0 && specIdx >= 0 {
 			spec := &a.State.Projects[projIdx].Specs[specIdx]
+			if spec.RunningSession == nil {
+				a.SetStatus(ui.StatusWarning, "Session not running")
+				return
+			}
+			sessionName := spec.RunningSession.Name
 			a.SetStatus(ui.StatusInfo, "Terminating "+spec.Name+"...")
-			if err := a.Client.TerminateSession(ctx, spec.Name); err != nil {
+			if err := a.Client.TerminateSession(ctx, sessionName); err != nil {
 				a.SetStatus(ui.StatusError, "Failed to terminate: "+err.Error())
 				return
 			}
@@ -271,11 +276,26 @@ func (a *App) TerminateSelected(ctx context.Context) {
 		if projIdx >= 0 && projIdx < len(a.State.Projects) {
 			proj := a.State.Projects[projIdx]
 			a.SetStatus(ui.StatusInfo, "Terminating "+proj.File.DisplayName()+"...")
-			if err := a.Client.ProjectTerminate(ctx, proj.File.Path); err != nil {
-				a.SetStatus(ui.StatusError, "Failed to terminate project: "+err.Error())
-				return
+
+			// Terminate each running session individually
+			// This handles both regular sessions and push sessions correctly
+			terminated := 0
+			for i := range proj.Specs {
+				spec := &proj.Specs[i]
+				if spec.RunningSession != nil {
+					if err := a.Client.TerminateSession(ctx, spec.RunningSession.Name); err != nil {
+						a.SetStatus(ui.StatusError, "Failed to terminate "+spec.Name+": "+err.Error())
+						return
+					}
+					terminated++
+				}
 			}
-			a.SetStatus(ui.StatusInfo, "Terminated all sessions in project")
+
+			if terminated == 0 {
+				a.SetStatus(ui.StatusWarning, "No sessions running")
+			} else {
+				a.SetStatus(ui.StatusInfo, fmt.Sprintf("Terminated %d session(s)", terminated))
+			}
 		}
 	}
 }
@@ -290,8 +310,9 @@ func (a *App) FlushSelected(ctx context.Context) {
 				a.SetStatus(ui.StatusWarning, "Session not running")
 				return
 			}
+			sessionName := spec.RunningSession.Name
 			a.SetStatus(ui.StatusInfo, "Flushing "+spec.Name+"...")
-			if err := a.Client.FlushSession(ctx, spec.Name); err != nil {
+			if err := a.Client.FlushSession(ctx, sessionName); err != nil {
 				a.SetStatus(ui.StatusError, "Failed to flush: "+err.Error())
 				return
 			}
@@ -302,11 +323,25 @@ func (a *App) FlushSelected(ctx context.Context) {
 		if projIdx >= 0 && projIdx < len(a.State.Projects) {
 			proj := a.State.Projects[projIdx]
 			a.SetStatus(ui.StatusInfo, "Flushing "+proj.File.DisplayName()+"...")
-			if err := a.Client.ProjectFlush(ctx, proj.File.Path); err != nil {
-				a.SetStatus(ui.StatusError, "Failed to flush project: "+err.Error())
-				return
+
+			// Flush each running session individually
+			flushed := 0
+			for i := range proj.Specs {
+				spec := &proj.Specs[i]
+				if spec.RunningSession != nil {
+					if err := a.Client.FlushSession(ctx, spec.RunningSession.Name); err != nil {
+						a.SetStatus(ui.StatusError, "Failed to flush "+spec.Name+": "+err.Error())
+						return
+					}
+					flushed++
+				}
 			}
-			a.SetStatus(ui.StatusInfo, "Flushed all sessions in project")
+
+			if flushed == 0 {
+				a.SetStatus(ui.StatusWarning, "No sessions running")
+			} else {
+				a.SetStatus(ui.StatusInfo, fmt.Sprintf("Flushed %d session(s)", flushed))
+			}
 		}
 	}
 }
@@ -321,14 +356,15 @@ func (a *App) TogglePauseSelected(ctx context.Context) {
 				a.SetStatus(ui.StatusWarning, "Session not running")
 				return
 			}
+			sessionName := spec.RunningSession.Name
 			if spec.RunningSession.Paused {
-				if err := a.Client.ResumeSession(ctx, spec.Name); err != nil {
+				if err := a.Client.ResumeSession(ctx, sessionName); err != nil {
 					a.SetStatus(ui.StatusError, "Failed to resume: "+err.Error())
 					return
 				}
 				a.SetStatus(ui.StatusInfo, "Resumed session: "+spec.Name)
 			} else {
-				if err := a.Client.PauseSession(ctx, spec.Name); err != nil {
+				if err := a.Client.PauseSession(ctx, sessionName); err != nil {
 					a.SetStatus(ui.StatusError, "Failed to pause: "+err.Error())
 					return
 				}
@@ -349,19 +385,37 @@ func (a *App) TogglePauseSelected(ctx context.Context) {
 			}
 
 			if hasRunning {
-				// Pause all
-				if err := a.Client.ProjectPause(ctx, proj.File.Path); err != nil {
-					a.SetStatus(ui.StatusError, "Failed to pause project: "+err.Error())
-					return
+				// Pause all running sessions individually
+				paused := 0
+				for i := range proj.Specs {
+					spec := &proj.Specs[i]
+					if spec.RunningSession != nil && !spec.RunningSession.Paused {
+						if err := a.Client.PauseSession(ctx, spec.RunningSession.Name); err != nil {
+							a.SetStatus(ui.StatusError, "Failed to pause "+spec.Name+": "+err.Error())
+							return
+						}
+						paused++
+					}
 				}
-				a.SetStatus(ui.StatusInfo, "Paused all sessions in project")
+				a.SetStatus(ui.StatusInfo, fmt.Sprintf("Paused %d session(s)", paused))
 			} else {
-				// Resume all
-				if err := a.Client.ProjectResume(ctx, proj.File.Path); err != nil {
-					a.SetStatus(ui.StatusError, "Failed to resume project: "+err.Error())
-					return
+				// Resume all paused sessions individually
+				resumed := 0
+				for i := range proj.Specs {
+					spec := &proj.Specs[i]
+					if spec.RunningSession != nil && spec.RunningSession.Paused {
+						if err := a.Client.ResumeSession(ctx, spec.RunningSession.Name); err != nil {
+							a.SetStatus(ui.StatusError, "Failed to resume "+spec.Name+": "+err.Error())
+							return
+						}
+						resumed++
+					}
 				}
-				a.SetStatus(ui.StatusInfo, "Resumed all sessions in project")
+				if resumed == 0 {
+					a.SetStatus(ui.StatusWarning, "No sessions to resume")
+				} else {
+					a.SetStatus(ui.StatusInfo, fmt.Sprintf("Resumed %d session(s)", resumed))
+				}
 			}
 		}
 	}
@@ -373,7 +427,12 @@ func (a *App) ResumeSelected(ctx context.Context) {
 		projIdx, specIdx := a.GetSelectedSpec()
 		if projIdx >= 0 && specIdx >= 0 {
 			spec := &a.State.Projects[projIdx].Specs[specIdx]
-			if err := a.Client.ResumeSession(ctx, spec.Name); err != nil {
+			if spec.RunningSession == nil {
+				a.SetStatus(ui.StatusWarning, "Session not running")
+				return
+			}
+			sessionName := spec.RunningSession.Name
+			if err := a.Client.ResumeSession(ctx, sessionName); err != nil {
 				a.SetStatus(ui.StatusError, "Failed to resume: "+err.Error())
 				return
 			}
@@ -383,11 +442,23 @@ func (a *App) ResumeSelected(ctx context.Context) {
 		projIdx := a.GetSelectedProjectIndex()
 		if projIdx >= 0 && projIdx < len(a.State.Projects) {
 			proj := a.State.Projects[projIdx]
-			if err := a.Client.ProjectResume(ctx, proj.File.Path); err != nil {
-				a.SetStatus(ui.StatusError, "Failed to resume project: "+err.Error())
-				return
+			resumed := 0
+			for i := range proj.Specs {
+				spec := &proj.Specs[i]
+				if spec.RunningSession != nil {
+					if err := a.Client.ResumeSession(ctx, spec.RunningSession.Name); err != nil {
+						a.SetStatus(ui.StatusError, "Failed to resume "+spec.Name+": "+err.Error())
+						return
+					}
+					resumed++
+				}
 			}
-			a.SetStatus(ui.StatusInfo, "Resumed all sessions in project")
+
+			if resumed == 0 {
+				a.SetStatus(ui.StatusWarning, "No sessions to resume")
+			} else {
+				a.SetStatus(ui.StatusInfo, fmt.Sprintf("Resumed %d session(s)", resumed))
+			}
 		}
 	}
 }
@@ -424,10 +495,10 @@ func (a *App) PushSelectedSpec(ctx context.Context) {
 		return
 	}
 
-	// Build ignore patterns from session definition and project defaults
+	// Build session options from session definition and project defaults
 	opts := buildSessionOptions(&sessionDef, proj.File.Defaults)
 
-	err := a.Client.CreatePushSession(ctx, spec.Name, sessionDef.Alpha, sessionDef.Beta, opts.Ignore)
+	err := a.Client.CreatePushSession(ctx, spec.Name, sessionDef.Alpha, sessionDef.Beta, opts)
 	if err != nil {
 		a.SetStatus(ui.StatusError, "Failed to create push session: "+err.Error())
 		return
@@ -463,10 +534,10 @@ func (a *App) PushSelectedProject(ctx context.Context) {
 			return
 		}
 
-		// Build ignore patterns from session definition and project defaults
+		// Build session options from session definition and project defaults
 		opts := buildSessionOptions(&sessionDef, proj.File.Defaults)
 
-		if err := a.Client.CreatePushSession(ctx, spec.Name, sessionDef.Alpha, sessionDef.Beta, opts.Ignore); err != nil {
+		if err := a.Client.CreatePushSession(ctx, spec.Name, sessionDef.Alpha, sessionDef.Beta, opts); err != nil {
 			a.SetStatus(ui.StatusError, "Failed to create push session for "+spec.Name+": "+err.Error())
 			return
 		}
@@ -505,11 +576,11 @@ func (a *App) PushConflictsToBeta(ctx context.Context) {
 		return
 	}
 
-	// Build ignore patterns from session definition and project defaults
+	// Build session options from session definition and project defaults
 	opts := buildSessionOptions(&sessionDef, proj.File.Defaults)
 
 	// Create a one-way push session to overwrite beta with alpha
-	if err := a.Client.CreatePushSession(ctx, spec.Name, sessionDef.Alpha, sessionDef.Beta, opts.Ignore); err != nil {
+	if err := a.Client.CreatePushSession(ctx, spec.Name, sessionDef.Alpha, sessionDef.Beta, opts); err != nil {
 		a.SetStatus(ui.StatusError, "Failed to create push session: "+err.Error())
 		return
 	}
@@ -707,6 +778,15 @@ func buildSessionOptions(def *project.SessionDefinition, defaults *project.Defau
 		opts.IgnoreVCS = def.Ignore.VCS
 	} else if defaults != nil && defaults.Ignore != nil && defaults.Ignore.VCS != nil {
 		opts.IgnoreVCS = defaults.Ignore.VCS
+	}
+
+	// Apply symlink mode from Extra field
+	if def.Extra != nil {
+		if symlink, ok := def.Extra["symlink"].(map[string]interface{}); ok {
+			if mode, ok := symlink["mode"].(string); ok {
+				opts.SymlinkMode = mode
+			}
+		}
 	}
 
 	return opts
