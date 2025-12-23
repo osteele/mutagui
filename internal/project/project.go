@@ -67,6 +67,9 @@ func (p *ProjectFile) DisplayName() string {
 
 // SyncSpec represents a sync specification with its current state.
 type SyncSpec struct {
+	// Name is the spec name from the config file. Use this when creating sessions.
+	// For operations on running sessions (terminate, pause, resume, flush),
+	// use RunningSession.Name instead, as push sessions have a "-push" suffix.
 	Name           string
 	State          SyncSpecState
 	RunningSession *mutagen.SyncSession

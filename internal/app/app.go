@@ -235,7 +235,7 @@ func (a *App) StartSelectedSpec(ctx context.Context) {
 	a.SetStatus(ui.StatusInfo, "Started session: "+spec.Name)
 }
 
-// StartSelectedProject starts all specs in the selected project using native mutagen project command.
+// StartSelectedProject starts all non-running specs in the selected project.
 func (a *App) StartSelectedProject(ctx context.Context) {
 	projIdx := a.GetSelectedProjectIndex()
 	if projIdx < 0 || projIdx >= len(a.State.Projects) {
@@ -246,11 +246,39 @@ func (a *App) StartSelectedProject(ctx context.Context) {
 	proj := a.State.Projects[projIdx]
 	a.SetStatus(ui.StatusInfo, "Starting "+proj.File.DisplayName()+"...")
 
-	if err := a.Client.ProjectStart(ctx, proj.File.Path); err != nil {
-		a.SetStatus(ui.StatusError, "Failed to start project: "+err.Error())
-		return
+	// Start each non-running session individually
+	// (mutagen project start fails if any session is already running)
+	started := 0
+	for i := range proj.Specs {
+		spec := &proj.Specs[i]
+		if spec.IsRunning() {
+			continue // Skip already running sessions
+		}
+
+		sessionDef, exists := proj.File.Sessions[spec.Name]
+		if !exists {
+			continue
+		}
+
+		// Prepare endpoint directories before creating session
+		if err := prepareEndpoints(ctx, sessionDef.Alpha, sessionDef.Beta); err != nil {
+			a.SetStatus(ui.StatusError, "Failed to prepare endpoints for "+spec.Name+": "+err.Error())
+			return
+		}
+
+		opts := buildSessionOptions(&sessionDef, proj.File.Defaults)
+		if err := a.Client.CreateSession(ctx, spec.Name, sessionDef.Alpha, sessionDef.Beta, opts); err != nil {
+			a.SetStatus(ui.StatusError, "Failed to start "+spec.Name+": "+err.Error())
+			return
+		}
+		started++
 	}
-	a.SetStatus(ui.StatusInfo, "Started all sessions in project")
+
+	if started == 0 {
+		a.SetStatus(ui.StatusWarning, "All sessions already running")
+	} else {
+		a.SetStatus(ui.StatusInfo, fmt.Sprintf("Started %d session(s)", started))
+	}
 }
 
 // TerminateSelected terminates the selected spec or all specs in the project.
@@ -483,7 +511,7 @@ func (a *App) PushSelectedSpec(ctx context.Context) {
 
 	// Terminate existing session if running
 	if spec.IsRunning() {
-		if err := a.Client.TerminateSession(ctx, spec.Name); err != nil {
+		if err := a.Client.TerminateSession(ctx, spec.RunningSession.Name); err != nil {
 			a.SetStatus(ui.StatusError, "Failed to terminate existing session: "+err.Error())
 			return
 		}
@@ -564,7 +592,7 @@ func (a *App) PushConflictsToBeta(ctx context.Context) {
 
 	// Terminate existing session if running
 	if spec.IsRunning() {
-		if err := a.Client.TerminateSession(ctx, spec.Name); err != nil {
+		if err := a.Client.TerminateSession(ctx, spec.RunningSession.Name); err != nil {
 			a.SetStatus(ui.StatusError, "Failed to terminate existing session: "+err.Error())
 			return
 		}

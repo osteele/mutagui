@@ -190,6 +190,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 				view.App.QueueUpdateDraw(func() {
 					view.RefreshList()
 					view.UpdateStatus()
+					updateConflictModalIfOpen(view, mainApp)
 				})
 			}()
 			return nil
@@ -250,6 +251,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 						view.App.QueueUpdateDraw(func() {
 							view.RefreshList()
 							view.UpdateStatus()
+							updateConflictModalIfOpen(view, mainApp)
 						})
 					}()
 				}
@@ -276,6 +278,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 				view.App.QueueUpdateDraw(func() {
 					view.RefreshList()
 					view.UpdateStatus()
+					updateConflictModalIfOpen(view, mainApp)
 				})
 			}()
 			return nil
@@ -296,6 +299,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 				view.App.QueueUpdateDraw(func() {
 					view.RefreshList()
 					view.UpdateStatus()
+					updateConflictModalIfOpen(view, mainApp)
 				})
 			}()
 			return nil
@@ -316,6 +320,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 				view.App.QueueUpdateDraw(func() {
 					view.RefreshList()
 					view.UpdateStatus()
+					updateConflictModalIfOpen(view, mainApp)
 				})
 			}()
 			return nil
@@ -327,6 +332,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 				view.App.QueueUpdateDraw(func() {
 					view.RefreshList()
 					view.UpdateStatus()
+					updateConflictModalIfOpen(view, mainApp)
 				})
 			}()
 			return nil
@@ -338,6 +344,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 				view.App.QueueUpdateDraw(func() {
 					view.RefreshList()
 					view.UpdateStatus()
+					updateConflictModalIfOpen(view, mainApp)
 				})
 			}()
 			return nil
@@ -362,6 +369,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 				view.App.QueueUpdateDraw(func() {
 					view.RefreshList()
 					view.UpdateStatus()
+					updateConflictModalIfOpen(view, mainApp)
 				})
 			}()
 			return nil
@@ -374,6 +382,7 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 					view.App.QueueUpdateDraw(func() {
 						view.RefreshList()
 						view.UpdateStatus()
+						updateConflictModalIfOpen(view, mainApp)
 					})
 				}()
 			}
@@ -409,7 +418,17 @@ func autoRefresh(view *ui.View, mainApp *app.App, interval time.Duration) {
 			view.App.QueueUpdateDraw(func() {
 				view.RefreshList()
 				view.UpdateStatus()
+				updateConflictModalIfOpen(view, mainApp)
 			})
 		}
+	}
+}
+
+// updateConflictModalIfOpen updates the conflict modal with current data if it's open.
+func updateConflictModalIfOpen(view *ui.View, mainApp *app.App) {
+	if mainApp.State.ViewingConflicts {
+		conflicts := mainApp.GetSelectedSpecConflicts()
+		session := mainApp.GetSelectedSession()
+		view.UpdateConflictModalIfOpen(conflicts, session)
 	}
 }

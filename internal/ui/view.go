@@ -660,6 +660,27 @@ func (v *View) HideConflictModal() {
 	v.App.SetFocus(v.List)
 }
 
+// UpdateConflictModalIfOpen updates the conflict modal if it's currently visible.
+// If there are no conflicts, it closes the modal automatically.
+// Returns true if the modal was closed due to no conflicts.
+func (v *View) UpdateConflictModalIfOpen(conflicts []mutagen.Conflict, session *mutagen.SyncSession) bool {
+	if !v.State.ViewingConflicts {
+		return false
+	}
+
+	// If no conflicts remain, close the modal
+	if len(conflicts) == 0 {
+		v.State.ViewingConflicts = false
+		v.HideConflictModal()
+		return true
+	}
+
+	// Update the modal content by replacing it
+	v.Pages.RemovePage("conflicts")
+	v.ShowConflictModal(conflicts, session)
+	return false
+}
+
 // ShowSyncStatusModal displays detailed sync status for the selected session.
 func (v *View) ShowSyncStatusModal(session *mutagen.SyncSession) {
 	theme := v.State.ColorScheme
