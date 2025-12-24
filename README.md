@@ -157,6 +157,11 @@ The TUI displays a hierarchical tree view of projects and their sync specs:
 | `?` | Show help screen with all commands |
 | `q` / `Ctrl-C` | Quit application |
 
+#### Mouse
+- **Click** on a list item to select it
+- **Click** on a project header to fold/unfold
+- **Shift+click and drag** to select text (bypasses app mouse handling for copying)
+
 #### Project Actions (when project selected)
 | Key | Action |
 |-----|--------|

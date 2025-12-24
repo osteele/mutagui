@@ -212,6 +212,13 @@ func (a *App) StartSelectedSpec(ctx context.Context) {
 
 	proj := a.State.Projects[projIdx]
 	spec := &proj.Specs[specIdx]
+
+	// Skip if already running
+	if spec.IsRunning() {
+		a.SetStatus(ui.StatusInfo, spec.Name+" is already running")
+		return
+	}
+
 	a.SetStatus(ui.StatusInfo, "Starting "+spec.Name+"...")
 
 	sessionDef, exists := proj.File.Sessions[spec.Name]
@@ -219,6 +226,10 @@ func (a *App) StartSelectedSpec(ctx context.Context) {
 		a.SetStatus(ui.StatusError, "Session definition not found")
 		return
 	}
+
+	// Terminate any existing sessions with this name to avoid duplicates
+	// (may exist from previous runs or other sources)
+	_ = a.Client.TerminateSession(ctx, spec.Name)
 
 	// Prepare endpoint directories before creating session
 	if err := prepareEndpoints(ctx, sessionDef.Alpha, sessionDef.Beta); err != nil {
@@ -259,6 +270,10 @@ func (a *App) StartSelectedProject(ctx context.Context) {
 		if !exists {
 			continue
 		}
+
+		// Terminate any existing sessions with this name to avoid duplicates
+		// (may exist from previous runs or other sources)
+		_ = a.Client.TerminateSession(ctx, spec.Name)
 
 		// Prepare endpoint directories before creating session
 		if err := prepareEndpoints(ctx, sessionDef.Alpha, sessionDef.Beta); err != nil {
@@ -509,13 +524,9 @@ func (a *App) PushSelectedSpec(ctx context.Context) {
 		return
 	}
 
-	// Terminate existing session if running
-	if spec.IsRunning() {
-		if err := a.Client.TerminateSession(ctx, spec.RunningSession.Name); err != nil {
-			a.SetStatus(ui.StatusError, "Failed to terminate existing session: "+err.Error())
-			return
-		}
-	}
+	// Terminate any existing sessions with this name to avoid duplicates
+	// (handles both running sessions and stray duplicates)
+	_ = a.Client.TerminateSession(ctx, spec.Name)
 
 	// Prepare endpoint directories before creating session
 	if err := prepareEndpoints(ctx, sessionDef.Alpha, sessionDef.Beta); err != nil {
@@ -545,16 +556,17 @@ func (a *App) PushSelectedProject(ctx context.Context) {
 	proj := a.State.Projects[projIdx]
 	a.SetStatus(ui.StatusInfo, "Creating push sessions for "+proj.File.DisplayName()+"...")
 
-	// Terminate all existing sessions first
-	if err := a.Client.ProjectTerminate(ctx, proj.File.Path); err != nil {
-		// Ignore errors - project may not have running sessions
-	}
+	// Terminate all existing sessions first (project-level and by name to catch strays)
+	_ = a.Client.ProjectTerminate(ctx, proj.File.Path)
 
 	for _, spec := range proj.Specs {
 		sessionDef, exists := proj.File.Sessions[spec.Name]
 		if !exists {
 			continue
 		}
+
+		// Terminate any stray sessions with this name
+		_ = a.Client.TerminateSession(ctx, spec.Name)
 
 		// Prepare endpoint directories before creating session
 		if err := prepareEndpoints(ctx, sessionDef.Alpha, sessionDef.Beta); err != nil {
@@ -590,13 +602,8 @@ func (a *App) PushConflictsToBeta(ctx context.Context) {
 		return
 	}
 
-	// Terminate existing session if running
-	if spec.IsRunning() {
-		if err := a.Client.TerminateSession(ctx, spec.RunningSession.Name); err != nil {
-			a.SetStatus(ui.StatusError, "Failed to terminate existing session: "+err.Error())
-			return
-		}
-	}
+	// Terminate any existing sessions with this name to avoid duplicates
+	_ = a.Client.TerminateSession(ctx, spec.Name)
 
 	// Prepare endpoint directories
 	if err := prepareEndpoints(ctx, sessionDef.Alpha, sessionDef.Beta); err != nil {
