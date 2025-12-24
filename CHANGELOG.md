@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2024-12-24
 
 ### Added
+- Mouse support: click to select items, click on project headers to fold/unfold
 - Enter key to edit project configuration files in your preferred editor
 - Tab key navigation to switch between Projects and Sessions areas
 - Push session functionality (`p` key on projects)
@@ -21,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Switch between showing paths and last sync time
 
 ### Changed
+- Conflict Details view now auto-updates when conflicts change and auto-closes when resolved
 - Session start/push operations now terminate all existing sessions first (prevents conflicts)
 - UI layout dynamically adjusts when projects or sessions are empty
 - Projects now displayed before sessions in the list
@@ -28,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Home directory paths shortened with `~` in UI
 
 ### Fixed
+- Project start now works when some sessions are already running (starts remaining sessions individually)
 - UI no longer crashes on transient Mutagen CLI errors
 - Prevent refresh error loops (manual retry required after errors)
 - Cross-platform timeout handling for Mutagen commands
@@ -38,3 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - Initial Release
 
 Initial release
+
+[0.2.0]: https://github.com/osteele/mutagui/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/osteele/mutagui/releases/tag/v0.1.0

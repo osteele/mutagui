@@ -1,5 +1,9 @@
 # Mutagen TUI
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/osteele/mutagui)](https://goreportcard.com/report/github.com/osteele/mutagui)
+[![Go Reference](https://pkg.go.dev/badge/github.com/osteele/mutagui.svg)](https://pkg.go.dev/github.com/osteele/mutagui)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A terminal user interface for managing [Mutagen](https://mutagen.io/) sync sessions.
 
 For more development tools, see: https://osteele.com/software/development-tools
@@ -41,10 +45,17 @@ For more development tools, see: https://osteele.com/software/development-tools
 
 ## Installation
 
+### Using Go
+
+```bash
+go install github.com/osteele/mutagui@latest
+```
+
 ### From Source
 
 ```bash
-# Clone or navigate to the repository
+# Clone the repository
+git clone https://github.com/osteele/mutagui.git
 cd mutagui
 
 # Build and install
