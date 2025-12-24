@@ -40,6 +40,10 @@ type AppState struct {
 	ShowPaths         bool
 }
 
+// MouseClickHandler is called when a list item is clicked.
+// Returns true if the click was handled (e.g., fold toggle).
+type MouseClickHandler func(index int) bool
+
 // View manages the TUI display.
 type View struct {
 	App    *tview.Application
@@ -51,6 +55,13 @@ type View struct {
 	Header *tview.TextView
 	Modal  *tview.Modal
 	Pages  *tview.Pages
+
+	// Callbacks
+	onSelectionChanged func(index int)
+	onMouseClick       MouseClickHandler
+
+	// Internal state
+	isRefreshing bool // Flag to ignore selection changes during refresh
 }
 
 // NewView creates a new View.
@@ -63,6 +74,9 @@ func NewView(state *AppState) *View {
 		App:   tview.NewApplication(),
 		State: state,
 	}
+
+	// Enable mouse support
+	v.App.EnableMouse(true)
 
 	v.setupUI()
 	return v
@@ -141,6 +155,52 @@ func (v *View) setupUI() {
 		AddPage("main", v.Layout, true, true)
 
 	v.App.SetRoot(v.Pages, true)
+
+	// Set up list selection change handler
+	v.List.SetChangedFunc(func(index int, mainText string, secondaryText string, shortcut rune) {
+		// Ignore selection changes during refresh (caused by List.Clear())
+		if v.isRefreshing {
+			return
+		}
+		if v.onSelectionChanged != nil {
+			v.onSelectionChanged(index)
+		}
+	})
+
+	// Set up mouse handler for clicks
+	v.List.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action == tview.MouseLeftClick {
+			// Get the clicked row
+			x, y := event.Position()
+			// Check if click is within list bounds
+			rectX, rectY, width, height := v.List.GetInnerRect()
+			if x >= rectX && x < rectX+width && y >= rectY && y < rectY+height {
+				clickedIndex := y - rectY
+				if clickedIndex >= 0 && clickedIndex < v.List.GetItemCount() {
+					// Call the mouse click handler
+					if v.onMouseClick != nil {
+						if v.onMouseClick(clickedIndex) {
+							// Click was handled (e.g., fold toggle), consume event
+							return tview.MouseConsumed, nil
+						}
+					}
+				}
+			}
+		}
+		// Let default handler process the event
+		return action, event
+	})
+}
+
+// SetSelectionChangedFunc sets the callback for when list selection changes via mouse.
+func (v *View) SetSelectionChangedFunc(handler func(index int)) {
+	v.onSelectionChanged = handler
+}
+
+// SetMouseClickFunc sets the callback for mouse clicks on list items.
+// The handler receives the clicked index and returns true if the click was handled.
+func (v *View) SetMouseClickFunc(handler MouseClickHandler) {
+	v.onMouseClick = handler
 }
 
 // UpdateHelpText updates the help bar based on current selection.
@@ -173,6 +233,10 @@ func (v *View) UpdateHelpText() {
 
 // RefreshList rebuilds the list from the current project state.
 func (v *View) RefreshList() {
+	// Set flag to ignore selection change callbacks during refresh
+	v.isRefreshing = true
+	defer func() { v.isRefreshing = false }()
+
 	v.List.Clear()
 	theme := v.State.ColorScheme
 

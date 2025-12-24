@@ -152,3 +152,11 @@ func (sm *SelectionManager) SetIndex(index int) {
 		}
 	}
 }
+
+// ItemAt returns the item at the given index, or nil if out of bounds.
+func (sm *SelectionManager) ItemAt(index int) *SelectableItem {
+	if index >= 0 && index < len(sm.items) {
+		return &sm.items[index]
+	}
+	return nil
+}

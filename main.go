@@ -78,6 +78,30 @@ func run() error {
 		return handleInput(view, mainApp, event)
 	})
 
+	// Set up mouse click handlers
+	view.SetSelectionChangedFunc(func(index int) {
+		// Sync selection state when user clicks on a list item
+		mainApp.State.Selection.SetIndex(index)
+		view.UpdateStatus()
+		view.UpdateHelpText()
+	})
+
+	view.SetMouseClickFunc(func(index int) bool {
+		// Check if clicked item is a project header
+		item := mainApp.State.Selection.ItemAt(index)
+		if item != nil && item.Type == ui.SelectableProject {
+			// Update selection to the clicked project
+			mainApp.State.Selection.SetIndex(index)
+			// Toggle fold on project click
+			mainApp.ToggleProjectFold(item.ProjectIndex)
+			view.RefreshList()
+			view.UpdateStatus()
+			view.UpdateHelpText()
+			return true
+		}
+		return false
+	})
+
 	// Set up auto-refresh
 	if cfg.Refresh.Enabled {
 		go autoRefresh(view, mainApp, time.Duration(cfg.Refresh.IntervalSecs)*time.Second)
