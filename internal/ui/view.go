@@ -405,6 +405,12 @@ func (v *View) renderSpecRow(proj *project.Project, spec *project.SyncSpec, them
 			nameWithMode = spec.Name + " (one-way)"
 		}
 
+		conflictIcon := ""
+		if session.HasConflicts() {
+			conflictIcon = fmt.Sprintf(" [%s::b]⚠[-:-:-]",
+				colorToTag(theme.StatusPausedFG))
+		}
+
 		var result string
 		if v.State.ShowPaths {
 			// Show endpoint paths
@@ -425,9 +431,10 @@ func (v *View) renderSpecRow(proj *project.Project, spec *project.SyncSpec, them
 				arrow = "⬆"
 			}
 
-			result = fmt.Sprintf("%s[%s]%s[-] [%s::b]%-32s[-:-:-] %s  [%s]%s[-][%s]%s[-] %s [%s]%s[-][%s]%s[-]",
+			result = fmt.Sprintf("%s[%s]%s[-]%s [%s::b]%-32s[-:-:-] %s  [%s]%s[-][%s]%s[-] %s [%s]%s[-][%s]%s[-]",
 				indent,
 				colorToTag(statusColor), statusIcon,
+				conflictIcon,
 				colorToTag(theme.SessionNameFG), nameWithMode,
 				session.StatusIcon(),
 				colorToTag(alphaColor), alphaStatus,
@@ -442,9 +449,10 @@ func (v *View) renderSpecRow(proj *project.Project, spec *project.SyncSpec, them
 			if session.SuccessfulCycles != nil && *session.SuccessfulCycles > 0 {
 				cyclesInfo = fmt.Sprintf(" (%d cycles)", *session.SuccessfulCycles)
 			}
-			result = fmt.Sprintf("%s[%s]%s[-] [%s::b]%-32s[-:-:-] %s %s%s",
+			result = fmt.Sprintf("%s[%s]%s[-]%s [%s::b]%-32s[-:-:-] %s %s%s",
 				indent,
 				colorToTag(statusColor), statusIcon,
+				conflictIcon,
 				colorToTag(theme.SessionNameFG), nameWithMode,
 				session.StatusIcon(),
 				statusText,
@@ -649,64 +657,40 @@ func (v *View) HideHelpModal() {
 	v.App.SetFocus(v.List)
 }
 
-// ShowConflictModal displays conflicts for the selected spec.
-func (v *View) ShowConflictModal(conflicts []mutagen.Conflict, session *mutagen.SyncSession) {
+// ShowConflictModal displays conflicts for the current selection. For projects,
+// it aggregates conflicts across all specs with running sessions.
+func (v *View) ShowConflictModal(sessionConflicts []SessionConflicts) {
 	theme := v.State.ColorScheme
 
+	totalConflicts := 0
+	for _, sc := range sessionConflicts {
+		totalConflicts += len(sc.Conflicts)
+	}
+
 	var text string
-	if conflicts == nil || len(conflicts) == 0 {
+	if totalConflicts == 0 {
 		text = "No conflicts found"
 	} else {
-		text = fmt.Sprintf("[%s::b]Press 'b' to push all conflicts to beta (alpha → beta copy)[-:-:-]\n",
-			colorToTag(theme.HelpKeyFG))
-		text += "Press Esc or 'c' to close this view\n\n"
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("[%s::b]Press 'b' to push all conflicts to beta (alpha → beta copy)[-:-:-]\n",
+			colorToTag(theme.HelpKeyFG)))
+		sb.WriteString("Press Esc or 'c' to close this view\n\n")
 
-		for _, conflict := range conflicts {
-			// Show full paths to the conflicting file/directory
-			if session != nil {
-				alphaPath := session.AlphaDisplay()
-				betaPath := session.BetaDisplay()
-				if conflict.Root != "" && conflict.Root != "." {
-					// Append conflict path to endpoint paths
-					if !strings.HasSuffix(alphaPath, "/") {
-						alphaPath += "/"
-					}
-					if !strings.HasSuffix(betaPath, "/") {
-						betaPath += "/"
-					}
-					alphaPath += conflict.Root
-					betaPath += conflict.Root
-				}
-
-				text += fmt.Sprintf("[%s::b]Alpha (α):[-:-:-] [%s]%s[-]\n",
-					colorToTag(theme.SessionAlphaFG),
-					colorToTag(theme.SessionAlphaFG),
-					alphaPath)
-				text += fmt.Sprintf("[%s::b]Beta (β):[-:-:-]  [%s]%s[-]\n",
-					colorToTag(theme.SessionBetaFG),
-					colorToTag(theme.SessionBetaFG),
-					betaPath)
-			} else {
-				// Fallback if no session - just show root
-				text += fmt.Sprintf("[%s::b]Root:[-:-:-] [%s]%s[-]\n",
-					colorToTag(theme.SessionNameFG),
-					colorToTag(theme.SessionAlphaFG), conflict.Root)
+		for _, sc := range sessionConflicts {
+			if len(sc.Conflicts) == 0 {
+				continue
 			}
-			text += fmt.Sprintf("  α %d / β %d changes\n",
-				len(conflict.AlphaChanges), len(conflict.BetaChanges))
-
-			if len(conflict.AlphaChanges) > 0 {
-				text += fmt.Sprintf("  [%s::b]α[-:-:-] %s\n",
-					colorToTag(theme.SessionAlphaFG),
-					summarizeChanges(conflict.AlphaChanges))
+			if sc.SpecName != "" {
+				sb.WriteString(fmt.Sprintf("[%s::b]%s[-:-:-]\n",
+					colorToTag(theme.SessionNameFG), sc.SpecName))
 			}
-			if len(conflict.BetaChanges) > 0 {
-				text += fmt.Sprintf("  [%s::b]β[-:-:-] %s\n",
-					colorToTag(theme.SessionBetaFG),
-					summarizeChanges(conflict.BetaChanges))
+			for _, conflict := range sc.Conflicts {
+				appendConflictDetails(&sb, theme, conflict, sc.Session)
+				sb.WriteString("\n")
 			}
-			text += "\n"
+			sb.WriteString("\n")
 		}
+		text = strings.TrimSpace(sb.String())
 	}
 
 	modal := tview.NewTextView().
@@ -718,6 +702,51 @@ func (v *View) ShowConflictModal(conflicts []mutagen.Conflict, session *mutagen.
 	v.App.SetFocus(modal)
 }
 
+// appendConflictDetails writes a conflict's details into the provided builder.
+func appendConflictDetails(sb *strings.Builder, theme ColorScheme, conflict mutagen.Conflict, session *mutagen.SyncSession) {
+	if session != nil {
+		alphaPath := session.AlphaDisplay()
+		betaPath := session.BetaDisplay()
+		if conflict.Root != "" && conflict.Root != "." {
+			if !strings.HasSuffix(alphaPath, "/") {
+				alphaPath += "/"
+			}
+			if !strings.HasSuffix(betaPath, "/") {
+				betaPath += "/"
+			}
+			alphaPath += conflict.Root
+			betaPath += conflict.Root
+		}
+
+		sb.WriteString(fmt.Sprintf("[%s::b]Alpha (α):[-:-:-] [%s]%s[-]\n",
+			colorToTag(theme.SessionAlphaFG),
+			colorToTag(theme.SessionAlphaFG),
+			alphaPath))
+		sb.WriteString(fmt.Sprintf("[%s::b]Beta (β):[-:-:-]  [%s]%s[-]\n",
+			colorToTag(theme.SessionBetaFG),
+			colorToTag(theme.SessionBetaFG),
+			betaPath))
+	} else {
+		sb.WriteString(fmt.Sprintf("[%s::b]Root:[-:-:-] [%s]%s[-]\n",
+			colorToTag(theme.SessionNameFG),
+			colorToTag(theme.SessionAlphaFG), conflict.Root))
+	}
+
+	sb.WriteString(fmt.Sprintf("  α %d / β %d changes\n",
+		len(conflict.AlphaChanges), len(conflict.BetaChanges)))
+
+	if len(conflict.AlphaChanges) > 0 {
+		sb.WriteString(fmt.Sprintf("  [%s::b]α[-:-:-] %s\n",
+			colorToTag(theme.SessionAlphaFG),
+			summarizeChanges(conflict.AlphaChanges)))
+	}
+	if len(conflict.BetaChanges) > 0 {
+		sb.WriteString(fmt.Sprintf("  [%s::b]β[-:-:-] %s\n",
+			colorToTag(theme.SessionBetaFG),
+			summarizeChanges(conflict.BetaChanges)))
+	}
+}
+
 // HideConflictModal hides the conflict view.
 func (v *View) HideConflictModal() {
 	v.Pages.RemovePage("conflicts")
@@ -727,13 +756,18 @@ func (v *View) HideConflictModal() {
 // UpdateConflictModalIfOpen updates the conflict modal if it's currently visible.
 // If there are no conflicts, it closes the modal automatically.
 // Returns true if the modal was closed due to no conflicts.
-func (v *View) UpdateConflictModalIfOpen(conflicts []mutagen.Conflict, session *mutagen.SyncSession) bool {
+func (v *View) UpdateConflictModalIfOpen(sessionConflicts []SessionConflicts) bool {
 	if !v.State.ViewingConflicts {
 		return false
 	}
 
+	totalConflicts := 0
+	for _, sc := range sessionConflicts {
+		totalConflicts += len(sc.Conflicts)
+	}
+
 	// If no conflicts remain, close the modal
-	if len(conflicts) == 0 {
+	if totalConflicts == 0 {
 		v.State.ViewingConflicts = false
 		v.HideConflictModal()
 		return true
@@ -741,7 +775,7 @@ func (v *View) UpdateConflictModalIfOpen(conflicts []mutagen.Conflict, session *
 
 	// Update the modal content by replacing it
 	v.Pages.RemovePage("conflicts")
-	v.ShowConflictModal(conflicts, session)
+	v.ShowConflictModal(sessionConflicts)
 	return false
 }
 

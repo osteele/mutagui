@@ -165,24 +165,68 @@ func (a *App) GetSelectedSpec() (int, int) {
 	return a.State.Selection.SelectedSpec()
 }
 
-// GetSelectedSpecConflicts returns the conflicts for the selected spec.
-func (a *App) GetSelectedSpecConflicts() []mutagen.Conflict {
-	projIdx, specIdx := a.GetSelectedSpec()
-	if projIdx < 0 || specIdx < 0 {
+// GetConflictsForSelection returns conflict data for the currently selected
+// project/spec. When a project is selected, it aggregates conflicts for all
+// running specs within that project.
+func (a *App) GetConflictsForSelection() []ui.SessionConflicts {
+	item := a.State.Selection.SelectedItem()
+	if item == nil {
 		return nil
 	}
-	if projIdx >= len(a.State.Projects) {
+
+	switch item.Type {
+	case ui.SelectableProject:
+		return a.getProjectConflicts(item.ProjectIndex)
+	case ui.SelectableSpec:
+		conflict := a.getSpecConflicts(item.ProjectIndex, item.SpecIndex)
+		if conflict == nil {
+			return nil
+		}
+		return []ui.SessionConflicts{*conflict}
+	default:
+		return nil
+	}
+}
+
+// getProjectConflicts gathers conflicts for all specs within a project.
+func (a *App) getProjectConflicts(projIdx int) []ui.SessionConflicts {
+	if projIdx < 0 || projIdx >= len(a.State.Projects) {
+		return nil
+	}
+
+	proj := a.State.Projects[projIdx]
+	conflicts := make([]ui.SessionConflicts, 0, len(proj.Specs))
+	for specIdx := range proj.Specs {
+		if sc := a.getSpecConflicts(projIdx, specIdx); sc != nil {
+			conflicts = append(conflicts, *sc)
+		}
+	}
+	return conflicts
+}
+
+// getSpecConflicts builds the conflict bundle for a single spec.
+func (a *App) getSpecConflicts(projIdx, specIdx int) *ui.SessionConflicts {
+	if projIdx < 0 || projIdx >= len(a.State.Projects) {
 		return nil
 	}
 	proj := a.State.Projects[projIdx]
-	if specIdx >= len(proj.Specs) {
+	if specIdx < 0 || specIdx >= len(proj.Specs) {
 		return nil
 	}
+
 	spec := &proj.Specs[specIdx]
 	if spec.RunningSession == nil {
 		return nil
 	}
-	return spec.RunningSession.Conflicts
+	if len(spec.RunningSession.Conflicts) == 0 {
+		return nil
+	}
+
+	return &ui.SessionConflicts{
+		SpecName:  spec.Name,
+		Session:   spec.RunningSession,
+		Conflicts: spec.RunningSession.Conflicts,
+	}
 }
 
 // GetSelectedSession returns the running session for the selected spec.

@@ -240,9 +240,8 @@ func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.
 				view.HideConflictModal()
 			} else {
 				mainApp.ToggleConflictView()
-				conflicts := mainApp.GetSelectedSpecConflicts()
-				session := mainApp.GetSelectedSession()
-				view.ShowConflictModal(conflicts, session)
+				conflicts := mainApp.GetConflictsForSelection()
+				view.ShowConflictModal(conflicts)
 			}
 			return nil
 
@@ -451,8 +450,7 @@ func autoRefresh(view *ui.View, mainApp *app.App, interval time.Duration) {
 // updateConflictModalIfOpen updates the conflict modal with current data if it's open.
 func updateConflictModalIfOpen(view *ui.View, mainApp *app.App) {
 	if mainApp.State.ViewingConflicts {
-		conflicts := mainApp.GetSelectedSpecConflicts()
-		session := mainApp.GetSelectedSession()
-		view.UpdateConflictModalIfOpen(conflicts, session)
+		conflicts := mainApp.GetConflictsForSelection()
+		view.UpdateConflictModalIfOpen(conflicts)
 	}
 }
