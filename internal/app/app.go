@@ -28,7 +28,7 @@ type AppState struct {
 // App represents the application state.
 type App struct {
 	Config *config.Config
-	Client *mutagen.Client
+	Client mutagen.MutagenClient
 	State  *AppState
 
 	shouldQuit bool

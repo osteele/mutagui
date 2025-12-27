@@ -1,11 +1,14 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/osteele/mutagui/internal/config"
 	"github.com/osteele/mutagui/internal/mutagen"
 	"github.com/osteele/mutagui/internal/project"
+	"github.com/osteele/mutagui/internal/ui"
 )
 
 func TestParseEndpoint(t *testing.T) {
@@ -491,5 +494,396 @@ func TestGetSpecConflicts_WithConflicts(t *testing.T) {
 	}
 	if len(conflict.Conflicts) != 1 {
 		t.Errorf("Conflicts length = %d, want 1", len(conflict.Conflicts))
+	}
+}
+
+// MockClient implements mutagen.MutagenClient for testing
+type MockClient struct {
+	// Track calls
+	CreateSessionCalls     []CreateSessionCall
+	CreatePushSessionCalls []CreateSessionCall
+	TerminateCalls         []string
+	PauseCalls             []string
+	ResumeCalls            []string
+	FlushCalls             []string
+	ResetCalls             []string
+	ListSessionsResult     []mutagen.SyncSession
+	ListSessionsError      error
+
+	// Control behavior
+	CreateSessionError     error
+	CreatePushSessionError error
+	TerminateError         error
+	PauseError             error
+	ResumeError            error
+	FlushError             error
+}
+
+type CreateSessionCall struct {
+	Name, Alpha, Beta string
+	Opts              *mutagen.SessionOptions
+}
+
+func (m *MockClient) ListSessions(ctx context.Context) ([]mutagen.SyncSession, error) {
+	return m.ListSessionsResult, m.ListSessionsError
+}
+
+func (m *MockClient) CreateSession(ctx context.Context, name, alpha, beta string, opts *mutagen.SessionOptions) error {
+	m.CreateSessionCalls = append(m.CreateSessionCalls, CreateSessionCall{name, alpha, beta, opts})
+	return m.CreateSessionError
+}
+
+func (m *MockClient) CreatePushSession(ctx context.Context, name, alpha, beta string, opts *mutagen.SessionOptions) error {
+	m.CreatePushSessionCalls = append(m.CreatePushSessionCalls, CreateSessionCall{name, alpha, beta, opts})
+	return m.CreatePushSessionError
+}
+
+func (m *MockClient) TerminateSession(ctx context.Context, name string) error {
+	m.TerminateCalls = append(m.TerminateCalls, name)
+	return m.TerminateError
+}
+
+func (m *MockClient) PauseSession(ctx context.Context, name string) error {
+	m.PauseCalls = append(m.PauseCalls, name)
+	return m.PauseError
+}
+
+func (m *MockClient) ResumeSession(ctx context.Context, name string) error {
+	m.ResumeCalls = append(m.ResumeCalls, name)
+	return m.ResumeError
+}
+
+func (m *MockClient) FlushSession(ctx context.Context, name string) error {
+	m.FlushCalls = append(m.FlushCalls, name)
+	return m.FlushError
+}
+
+func (m *MockClient) ResetSession(ctx context.Context, name string) error {
+	m.ResetCalls = append(m.ResetCalls, name)
+	return nil
+}
+
+func (m *MockClient) ProjectStart(ctx context.Context, path string) error       { return nil }
+func (m *MockClient) ProjectTerminate(ctx context.Context, path string) error   { return nil }
+func (m *MockClient) ProjectPause(ctx context.Context, path string) error       { return nil }
+func (m *MockClient) ProjectResume(ctx context.Context, path string) error      { return nil }
+func (m *MockClient) ProjectFlush(ctx context.Context, path string) error       { return nil }
+func (m *MockClient) IsInstalled() bool                                         { return true }
+func (m *MockClient) GetVersion() (string, error)                               { return "0.0.0", nil }
+
+// newTestApp creates an App with a mock client for testing
+func newTestApp(mock *MockClient) *App {
+	cfg := config.DefaultConfig()
+	return &App{
+		Config: cfg,
+		Client: mock,
+		State: &AppState{
+			Projects:  []*project.Project{},
+			Selection: ui.NewSelectionManager(),
+			ShowPaths: true,
+		},
+	}
+}
+
+// createTestProjectWithFile creates a project with a proper File for testing
+func createTestProjectWithFile(name string, specs []string) *project.Project {
+	sessions := make(map[string]project.SessionDefinition)
+	for _, specName := range specs {
+		sessions[specName] = project.SessionDefinition{
+			Alpha: "/local/path",
+			Beta:  "/remote/path",
+		}
+	}
+
+	proj := &project.Project{
+		File: project.ProjectFile{
+			Sessions: sessions,
+		},
+		Specs: make([]project.SyncSpec, len(specs)),
+	}
+	for i, specName := range specs {
+		proj.Specs[i] = project.SyncSpec{
+			Name:  specName,
+			State: project.NotRunning,
+		}
+	}
+	return proj
+}
+
+// ============================================================================
+// Workflow Tests
+// ============================================================================
+
+func TestTerminateSelected_Spec(t *testing.T) {
+	mock := &MockClient{}
+	app := newTestApp(mock)
+
+	// Setup: project with one running spec
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	proj.Specs[0].State = project.RunningTwoWay
+	proj.Specs[0].RunningSession = &mutagen.SyncSession{Name: "spec1"}
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+
+	// Expand project and select spec
+	proj.Folded = false
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+	app.State.Selection.SelectNext() // Move to spec
+
+	// Execute
+	ctx := context.Background()
+	app.TerminateSelected(ctx)
+
+	// Verify
+	if len(mock.TerminateCalls) != 1 {
+		t.Errorf("TerminateCalls = %d, want 1", len(mock.TerminateCalls))
+	}
+	if mock.TerminateCalls[0] != "spec1" {
+		t.Errorf("Terminated session = %q, want 'spec1'", mock.TerminateCalls[0])
+	}
+}
+
+func TestTerminateSelected_Spec_NotRunning(t *testing.T) {
+	mock := &MockClient{}
+	app := newTestApp(mock)
+
+	// Setup: project with one non-running spec
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+
+	// Expand and select spec
+	proj.Folded = false
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+	app.State.Selection.SelectNext()
+
+	// Execute
+	ctx := context.Background()
+	app.TerminateSelected(ctx)
+
+	// Verify: should not call terminate
+	if len(mock.TerminateCalls) != 0 {
+		t.Errorf("TerminateCalls = %d, want 0 (session not running)", len(mock.TerminateCalls))
+	}
+	// Should set warning status
+	if app.State.StatusMessage == nil || app.State.StatusMessage.Type != ui.StatusWarning {
+		t.Error("Should set warning status for non-running session")
+	}
+}
+
+func TestTerminateSelected_Project(t *testing.T) {
+	mock := &MockClient{}
+	app := newTestApp(mock)
+
+	// Setup: project with two running specs
+	proj := createTestProjectWithFile("test-proj", []string{"spec1", "spec2"})
+	proj.Specs[0].State = project.RunningTwoWay
+	proj.Specs[0].RunningSession = &mutagen.SyncSession{Name: "spec1"}
+	proj.Specs[1].State = project.RunningTwoWay
+	proj.Specs[1].RunningSession = &mutagen.SyncSession{Name: "spec2"}
+	proj.Folded = true // Keep folded so project is selected
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+
+	// Execute
+	ctx := context.Background()
+	app.TerminateSelected(ctx)
+
+	// Verify: both specs terminated
+	if len(mock.TerminateCalls) != 2 {
+		t.Errorf("TerminateCalls = %d, want 2", len(mock.TerminateCalls))
+	}
+}
+
+func TestFlushSelected_Spec(t *testing.T) {
+	mock := &MockClient{}
+	app := newTestApp(mock)
+
+	// Setup: project with one running spec
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	proj.Specs[0].State = project.RunningTwoWay
+	proj.Specs[0].RunningSession = &mutagen.SyncSession{Name: "spec1"}
+	proj.Folded = false
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+	app.State.Selection.SelectNext() // Move to spec
+
+	// Execute
+	ctx := context.Background()
+	app.FlushSelected(ctx)
+
+	// Verify
+	if len(mock.FlushCalls) != 1 {
+		t.Errorf("FlushCalls = %d, want 1", len(mock.FlushCalls))
+	}
+	if mock.FlushCalls[0] != "spec1" {
+		t.Errorf("Flushed session = %q, want 'spec1'", mock.FlushCalls[0])
+	}
+}
+
+func TestTogglePauseSelected_Pause(t *testing.T) {
+	mock := &MockClient{}
+	app := newTestApp(mock)
+
+	// Setup: project with one running (not paused) spec
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	proj.Specs[0].State = project.RunningTwoWay
+	proj.Specs[0].RunningSession = &mutagen.SyncSession{Name: "spec1", Paused: false}
+	proj.Folded = false
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+	app.State.Selection.SelectNext() // Move to spec
+
+	// Execute
+	ctx := context.Background()
+	app.TogglePauseSelected(ctx)
+
+	// Verify: should pause
+	if len(mock.PauseCalls) != 1 {
+		t.Errorf("PauseCalls = %d, want 1", len(mock.PauseCalls))
+	}
+	if len(mock.ResumeCalls) != 0 {
+		t.Errorf("ResumeCalls = %d, want 0", len(mock.ResumeCalls))
+	}
+}
+
+func TestTogglePauseSelected_Resume(t *testing.T) {
+	mock := &MockClient{}
+	app := newTestApp(mock)
+
+	// Setup: project with one paused spec
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	proj.Specs[0].State = project.RunningTwoWay
+	proj.Specs[0].RunningSession = &mutagen.SyncSession{Name: "spec1", Paused: true}
+	proj.Folded = false
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+	app.State.Selection.SelectNext() // Move to spec
+
+	// Execute
+	ctx := context.Background()
+	app.TogglePauseSelected(ctx)
+
+	// Verify: should resume
+	if len(mock.ResumeCalls) != 1 {
+		t.Errorf("ResumeCalls = %d, want 1", len(mock.ResumeCalls))
+	}
+	if len(mock.PauseCalls) != 0 {
+		t.Errorf("PauseCalls = %d, want 0", len(mock.PauseCalls))
+	}
+}
+
+func TestRefreshSessions(t *testing.T) {
+	mock := &MockClient{
+		ListSessionsResult: []mutagen.SyncSession{
+			{Name: "spec1", Status: "Watching"},
+		},
+	}
+	app := newTestApp(mock)
+
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	app.State.Projects = []*project.Project{proj}
+
+	// Execute
+	ctx := context.Background()
+	err := app.RefreshSessions(ctx)
+
+	// Verify
+	if err != nil {
+		t.Errorf("RefreshSessions() error = %v", err)
+	}
+	if app.State.LastRefresh == nil {
+		t.Error("LastRefresh should be set")
+	}
+}
+
+func TestRefreshSessions_Error(t *testing.T) {
+	mock := &MockClient{
+		ListSessionsError: errors.New("connection failed"),
+	}
+	app := newTestApp(mock)
+
+	// Execute
+	ctx := context.Background()
+	err := app.RefreshSessions(ctx)
+
+	// Verify
+	if err == nil {
+		t.Error("RefreshSessions() should return error")
+	}
+	if app.State.StatusMessage == nil || app.State.StatusMessage.Type != ui.StatusError {
+		t.Error("Should set error status")
+	}
+}
+
+func TestTerminateSelected_Error(t *testing.T) {
+	mock := &MockClient{
+		TerminateError: errors.New("terminate failed"),
+	}
+	app := newTestApp(mock)
+
+	// Setup: project with one running spec
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	proj.Specs[0].State = project.RunningTwoWay
+	proj.Specs[0].RunningSession = &mutagen.SyncSession{Name: "spec1"}
+	proj.Folded = false
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+	app.State.Selection.SelectNext()
+
+	// Execute
+	ctx := context.Background()
+	app.TerminateSelected(ctx)
+
+	// Verify: should set error status
+	if app.State.StatusMessage == nil || app.State.StatusMessage.Type != ui.StatusError {
+		t.Error("Should set error status on terminate failure")
+	}
+}
+
+func TestFlushSelected_NotRunning(t *testing.T) {
+	mock := &MockClient{}
+	app := newTestApp(mock)
+
+	// Setup: project with non-running spec
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	proj.Folded = false
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+	app.State.Selection.SelectNext()
+
+	// Execute
+	ctx := context.Background()
+	app.FlushSelected(ctx)
+
+	// Verify: should not call flush, should set warning
+	if len(mock.FlushCalls) != 0 {
+		t.Errorf("FlushCalls = %d, want 0", len(mock.FlushCalls))
+	}
+	if app.State.StatusMessage == nil || app.State.StatusMessage.Type != ui.StatusWarning {
+		t.Error("Should set warning status for non-running session")
+	}
+}
+
+func TestResumeSelected_Spec(t *testing.T) {
+	mock := &MockClient{}
+	app := newTestApp(mock)
+
+	// Setup: project with one running spec
+	proj := createTestProjectWithFile("test-proj", []string{"spec1"})
+	proj.Specs[0].State = project.RunningTwoWay
+	proj.Specs[0].RunningSession = &mutagen.SyncSession{Name: "spec1"}
+	proj.Folded = false
+	app.State.Projects = []*project.Project{proj}
+	app.State.Selection.RebuildFromProjects(app.State.Projects)
+	app.State.Selection.SelectNext()
+
+	// Execute
+	ctx := context.Background()
+	app.ResumeSelected(ctx)
+
+	// Verify
+	if len(mock.ResumeCalls) != 1 {
+		t.Errorf("ResumeCalls = %d, want 1", len(mock.ResumeCalls))
 	}
 }

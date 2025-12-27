@@ -9,6 +9,34 @@ import (
 	"time"
 )
 
+// MutagenClient defines the interface for interacting with Mutagen.
+// This allows mocking the client in tests.
+type MutagenClient interface {
+	// Session operations
+	ListSessions(ctx context.Context) ([]SyncSession, error)
+	CreateSession(ctx context.Context, name, alpha, beta string, opts *SessionOptions) error
+	CreatePushSession(ctx context.Context, name, alpha, beta string, opts *SessionOptions) error
+	TerminateSession(ctx context.Context, name string) error
+	PauseSession(ctx context.Context, name string) error
+	ResumeSession(ctx context.Context, name string) error
+	FlushSession(ctx context.Context, name string) error
+	ResetSession(ctx context.Context, name string) error
+
+	// Project operations
+	ProjectStart(ctx context.Context, projectFilePath string) error
+	ProjectTerminate(ctx context.Context, projectFilePath string) error
+	ProjectPause(ctx context.Context, projectFilePath string) error
+	ProjectResume(ctx context.Context, projectFilePath string) error
+	ProjectFlush(ctx context.Context, projectFilePath string) error
+
+	// Utility
+	IsInstalled() bool
+	GetVersion() (string, error)
+}
+
+// Ensure Client implements MutagenClient
+var _ MutagenClient = (*Client)(nil)
+
 // Client provides methods for interacting with the Mutagen CLI.
 type Client struct {
 	timeout time.Duration
