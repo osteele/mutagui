@@ -4,9 +4,15 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/pelletier/go-toml/v2"
 )
+
+// withConfigPath temporarily overrides configPathFunc for a test.
+func withConfigPath(t *testing.T, path string) {
+	t.Helper()
+	original := configPathFunc
+	configPathFunc = func() string { return path }
+	t.Cleanup(func() { configPathFunc = original })
+}
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
@@ -39,6 +45,10 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoad_NoConfigFile(t *testing.T) {
+	// Point to a non-existent path in a temp directory
+	tmpDir := t.TempDir()
+	withConfigPath(t, filepath.Join(tmpDir, "nonexistent", "config.toml"))
+
 	// Load should return default config when no file exists
 	cfg, err := Load()
 	if err != nil {
@@ -56,16 +66,10 @@ func TestLoad_NoConfigFile(t *testing.T) {
 }
 
 func TestLoad_WithConfigFile(t *testing.T) {
-	// Create a temporary config directory
+	// Create a temporary config file
 	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
 
-	// Override the config path by creating a config file in the test
-	configDir := filepath.Join(tmpDir, "mutagui")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		t.Fatalf("Failed to create config dir: %v", err)
-	}
-
-	configPath := filepath.Join(configDir, "config.toml")
 	content := `
 [ui]
 theme = "dark"
@@ -83,15 +87,13 @@ exclude_patterns = ["vendor", "dist"]
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	// Read the file directly since we can't override the config path function
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("Failed to read config: %v", err)
-	}
+	// Point Load() to our temp config file
+	withConfigPath(t, configPath)
 
-	cfg := DefaultConfig()
-	if err := parseConfig(data, cfg); err != nil {
-		t.Fatalf("parseConfig() error = %v", err)
+	// Actually call Load() to test the full path
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
 	}
 
 	// Check parsed values
@@ -133,15 +135,24 @@ func TestDisplayMode_Values(t *testing.T) {
 	}
 }
 
-func TestParseConfig_PartialOverride(t *testing.T) {
+func TestLoad_PartialOverride(t *testing.T) {
 	// Test that partial config overrides only specified values
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
 	content := `
 [ui]
 theme = "light"
 `
-	cfg := DefaultConfig()
-	if err := parseConfig([]byte(content), cfg); err != nil {
-		t.Fatalf("parseConfig() error = %v", err)
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	withConfigPath(t, configPath)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
 	}
 
 	// Theme should be overridden
@@ -159,16 +170,34 @@ theme = "light"
 	}
 }
 
-func TestParseConfig_InvalidTOML(t *testing.T) {
+func TestLoad_InvalidTOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
 	content := `invalid toml [[[`
-	cfg := DefaultConfig()
-	err := parseConfig([]byte(content), cfg)
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	withConfigPath(t, configPath)
+
+	_, err := Load()
 	if err == nil {
-		t.Error("parseConfig() should return error for invalid TOML")
+		t.Error("Load() should return error for invalid TOML")
 	}
 }
 
-// parseConfig is a helper that mirrors the parsing logic in Load
-func parseConfig(data []byte, cfg *Config) error {
-	return toml.Unmarshal(data, cfg)
+func TestLoad_EmptyPath(t *testing.T) {
+	// When configPathFunc returns empty string, Load should return defaults
+	withConfigPath(t, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	defaultCfg := DefaultConfig()
+	if cfg.UI.Theme != defaultCfg.UI.Theme {
+		t.Errorf("UI.Theme = %v, want %v", cfg.UI.Theme, defaultCfg.UI.Theme)
+	}
 }

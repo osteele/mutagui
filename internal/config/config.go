@@ -68,10 +68,14 @@ func DefaultConfig() *Config {
 	}
 }
 
+// configPathFunc is the function used to determine the config file path.
+// It can be overridden in tests to control the config location.
+var configPathFunc = defaultConfigPath
+
 // Load loads the configuration from the standard config file location.
 // Returns the default config if no config file exists.
 func Load() (*Config, error) {
-	path := configPath()
+	path := configPathFunc()
 	if path == "" {
 		return DefaultConfig(), nil
 	}
@@ -92,8 +96,8 @@ func Load() (*Config, error) {
 	return config, nil
 }
 
-// configPath returns the standard config file path for the current platform.
-func configPath() string {
+// defaultConfigPath returns the standard config file path for the current platform.
+func defaultConfigPath() string {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return ""
