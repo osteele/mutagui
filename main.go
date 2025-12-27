@@ -5,12 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/osteele/mutagui/internal/app"
 	"github.com/osteele/mutagui/internal/config"
+	"github.com/osteele/mutagui/internal/mutagen"
 	"github.com/osteele/mutagui/internal/ui"
 )
 
@@ -55,402 +55,136 @@ func run() error {
 		return fmt.Errorf("mutagen is not installed or not in PATH")
 	}
 
-	// Create view with the shared state
-	view := ui.NewView(mainApp.State)
+	// Get theme
+	theme := ui.GetTheme(string(cfg.UI.Theme))
+
+	// Create model
+	model := ui.NewModel(theme)
 
 	// Load projects
 	ctx := context.Background()
 	if err := mainApp.LoadProjects(ctx, *projectDir); err != nil {
-		mainApp.SetStatus(ui.StatusWarning, "Failed to load some projects: "+err.Error())
+		model.StatusMessage = &ui.StatusMessage{Type: ui.StatusWarning, Text: "Failed to load some projects: " + err.Error()}
 	}
+
+	// Rebuild selection from projects
+	mainApp.State.Selection.RebuildFromProjects(mainApp.State.Projects)
+
+	// Share state between app and model
+	model.Projects = mainApp.State.Projects
+	model.Selection = mainApp.State.Selection
+	model.ShowPaths = mainApp.State.ShowPaths
 
 	// Initial session refresh
 	if err := mainApp.RefreshSessions(ctx); err != nil {
-		mainApp.SetStatus(ui.StatusWarning, "Failed to refresh sessions: "+err.Error())
+		model.StatusMessage = &ui.StatusMessage{Type: ui.StatusWarning, Text: "Failed to refresh sessions: " + err.Error()}
+	}
+	model.LastRefresh = mainApp.State.LastRefresh
+
+	// Set up callbacks
+	model.OnRefresh = func(ctx context.Context) error {
+		err := mainApp.RefreshSessions(ctx)
+		model.LastRefresh = mainApp.State.LastRefresh
+		if mainApp.State.StatusMessage != nil {
+			model.StatusMessage = &ui.StatusMessage{
+				Type: ui.StatusMessageType(mainApp.State.StatusMessage.Type),
+				Text: mainApp.State.StatusMessage.Text,
+			}
+		}
+		return err
 	}
 
-	// Update UI
-	view.RefreshList()
-	view.UpdateStatus()
-
-	// Set up input handler
-	view.App.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		return handleInput(view, mainApp, event)
-	})
-
-	// Set up mouse click handlers
-	view.SetSelectionChangedFunc(func(index int) {
-		// Sync selection state when user clicks on a list item
-		mainApp.State.Selection.SetIndex(index)
-		view.UpdateStatus()
-		view.UpdateHelpText()
-	})
-
-	view.SetMouseClickFunc(func(index int) bool {
-		// Check if clicked item is a project header
-		item := mainApp.State.Selection.ItemAt(index)
-		if item != nil && item.Type == ui.SelectableProject {
-			// Update selection to the clicked project
-			mainApp.State.Selection.SetIndex(index)
-			// Toggle fold on project click
-			mainApp.ToggleProjectFold(item.ProjectIndex)
-			view.RefreshList()
-			view.UpdateStatus()
-			view.UpdateHelpText()
-			return true
+	model.OnStart = func(ctx context.Context) {
+		if model.Selection.IsSpecSelected() {
+			mainApp.StartSelectedSpec(ctx)
+		} else {
+			mainApp.StartSelectedProject(ctx)
 		}
-		return false
-	})
+		syncStatus(mainApp, &model)
+	}
+
+	model.OnTerminate = func(ctx context.Context) {
+		mainApp.TerminateSelected(ctx)
+		syncStatus(mainApp, &model)
+	}
+
+	model.OnFlush = func(ctx context.Context) {
+		mainApp.FlushSelected(ctx)
+		syncStatus(mainApp, &model)
+	}
+
+	model.OnPause = func(ctx context.Context) {
+		mainApp.TogglePauseSelected(ctx)
+		syncStatus(mainApp, &model)
+	}
+
+	model.OnResume = func(ctx context.Context) {
+		mainApp.ResumeSelected(ctx)
+		syncStatus(mainApp, &model)
+	}
+
+	model.OnPush = func(ctx context.Context) {
+		if model.Selection.IsSpecSelected() {
+			mainApp.PushSelectedSpec(ctx)
+		} else {
+			mainApp.PushSelectedProject(ctx)
+		}
+		syncStatus(mainApp, &model)
+	}
+
+	model.OnPushConflicts = func(ctx context.Context) {
+		mainApp.PushConflictsToBeta(ctx)
+		syncStatus(mainApp, &model)
+	}
+
+	model.OnToggleFold = func(projIdx int) {
+		mainApp.ToggleProjectFold(projIdx)
+	}
+
+	model.OnOpenEditor = func(projIdx int) error {
+		return mainApp.OpenEditor(projIdx)
+	}
+
+	model.GetConflicts = func() []ui.SessionConflicts {
+		return mainApp.GetConflictsForSelection()
+	}
+
+	model.GetSelectedSession = func() *mutagen.SyncSession {
+		return mainApp.GetSelectedSession()
+	}
+
+	// Create program
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	// Set up auto-refresh
 	if cfg.Refresh.Enabled {
-		go autoRefresh(view, mainApp, time.Duration(cfg.Refresh.IntervalSecs)*time.Second)
+		go func() {
+			ticker := time.NewTicker(time.Duration(cfg.Refresh.IntervalSecs) * time.Second)
+			defer ticker.Stop()
+
+			for range ticker.C {
+				if mainApp.ShouldQuit() {
+					return
+				}
+				p.Send(ui.TickMsg(time.Now()))
+			}
+		}()
 	}
 
-	// Run the application
-	if err := view.App.Run(); err != nil {
+	// Run the program
+	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("application error: %w", err)
 	}
 
 	return nil
 }
 
-func handleInput(view *ui.View, mainApp *app.App, event *tcell.EventKey) *tcell.EventKey {
-	ctx := context.Background()
-
-	// Handle Escape to close modals
-	if event.Key() == tcell.KeyEscape {
-		if mainApp.State.ViewingHelp {
-			mainApp.ToggleHelp()
-			view.HideHelpModal()
-			return nil
+// syncStatus copies status message from app to model
+func syncStatus(mainApp *app.App, model *ui.Model) {
+	if mainApp.State.StatusMessage != nil {
+		model.StatusMessage = &ui.StatusMessage{
+			Type: ui.StatusMessageType(mainApp.State.StatusMessage.Type),
+			Text: mainApp.State.StatusMessage.Text,
 		}
-		if mainApp.State.ViewingConflicts {
-			mainApp.ToggleConflictView()
-			view.HideConflictModal()
-			return nil
-		}
-		if mainApp.State.ViewingSyncStatus {
-			mainApp.ToggleSyncStatusView()
-			view.HideSyncStatusModal()
-			return nil
-		}
-	}
-
-	// Handle Ctrl-C
-	if event.Key() == tcell.KeyCtrlC {
-		mainApp.Quit()
-		view.App.Stop()
-		return nil
-	}
-
-	switch event.Key() {
-	case tcell.KeyUp:
-		mainApp.SelectPrevious()
-		view.RefreshList()
-		view.UpdateStatus()
-		view.UpdateHelpText()
-		return nil
-
-	case tcell.KeyDown:
-		mainApp.SelectNext()
-		view.RefreshList()
-		view.UpdateStatus()
-		view.UpdateHelpText()
-		return nil
-
-	case tcell.KeyLeft:
-		if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-			mainApp.ToggleProjectFold(projIdx)
-			view.RefreshList()
-		}
-		return nil
-
-	case tcell.KeyRight, tcell.KeyEnter:
-		if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-			mainApp.ToggleProjectFold(projIdx)
-			view.RefreshList()
-		}
-		return nil
-
-	case tcell.KeyRune:
-		switch event.Rune() {
-		case 'q':
-			mainApp.Quit()
-			view.App.Stop()
-			return nil
-
-		case 'k':
-			mainApp.SelectPrevious()
-			view.RefreshList()
-			view.UpdateStatus()
-			view.UpdateHelpText()
-			return nil
-
-		case 'j':
-			mainApp.SelectNext()
-			view.RefreshList()
-			view.UpdateStatus()
-			view.UpdateHelpText()
-			return nil
-
-		case 'h':
-			if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-				mainApp.ToggleProjectFold(projIdx)
-				view.RefreshList()
-			}
-			return nil
-
-		case 'l':
-			if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-				mainApp.ToggleProjectFold(projIdx)
-				view.RefreshList()
-			}
-			return nil
-
-		case 'r':
-			go func() {
-				mainApp.RefreshSessions(ctx)
-				view.App.QueueUpdateDraw(func() {
-					view.RefreshList()
-					view.UpdateStatus()
-					updateConflictModalIfOpen(view, mainApp)
-				})
-			}()
-			return nil
-
-		case 'm':
-			mainApp.ToggleDisplayMode()
-			view.RefreshList()
-			return nil
-
-		case '?':
-			if mainApp.State.ViewingHelp {
-				mainApp.ToggleHelp()
-				view.HideHelpModal()
-			} else {
-				mainApp.ToggleHelp()
-				view.ShowHelpModal()
-			}
-			return nil
-
-		case 'c':
-			if mainApp.State.ViewingConflicts {
-				mainApp.ToggleConflictView()
-				view.HideConflictModal()
-			} else {
-				mainApp.ToggleConflictView()
-				conflicts := mainApp.GetConflictsForSelection()
-				view.ShowConflictModal(conflicts)
-			}
-			return nil
-
-		case 'e':
-			if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-				err := mainApp.OpenEditor(projIdx)
-				if app.IsTerminalEditorError(err) {
-					// Need to suspend TUI for terminal editor
-					view.App.Suspend(func() {
-						proj := mainApp.State.Projects[projIdx]
-						editorParts := app.GetEditorCommand()
-						if len(editorParts) == 0 {
-							mainApp.SetStatus(ui.StatusError, "Invalid editor command")
-							return
-						}
-						args := append(editorParts[1:], proj.File.Path)
-						cmd := exec.Command(editorParts[0], args...)
-						cmd.Stdin = os.Stdin
-						cmd.Stdout = os.Stdout
-						cmd.Stderr = os.Stderr
-						if err := cmd.Run(); err != nil {
-							mainApp.SetStatus(ui.StatusError, "Editor error: "+err.Error())
-						} else {
-							mainApp.SetStatus(ui.StatusInfo, "Edited: "+proj.File.DisplayName())
-						}
-					})
-					// Refresh after editing
-					go func() {
-						mainApp.RefreshSessions(ctx)
-						view.App.QueueUpdateDraw(func() {
-							view.RefreshList()
-							view.UpdateStatus()
-							updateConflictModalIfOpen(view, mainApp)
-						})
-					}()
-				}
-			}
-			return nil
-
-		case 's':
-			// Set immediate feedback
-			if mainApp.State.Selection.IsSpecSelected() {
-				if projIdx, specIdx := mainApp.GetSelectedSpec(); projIdx >= 0 && specIdx >= 0 {
-					mainApp.SetStatus(ui.StatusInfo, "Starting "+mainApp.State.Projects[projIdx].Specs[specIdx].Name+"...")
-				}
-			} else if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-				mainApp.SetStatus(ui.StatusInfo, "Starting "+mainApp.State.Projects[projIdx].File.DisplayName()+"...")
-			}
-			view.UpdateStatus()
-			go func() {
-				if mainApp.State.Selection.IsSpecSelected() {
-					mainApp.StartSelectedSpec(ctx)
-				} else {
-					mainApp.StartSelectedProject(ctx)
-				}
-				mainApp.RefreshSessions(ctx)
-				view.App.QueueUpdateDraw(func() {
-					view.RefreshList()
-					view.UpdateStatus()
-					updateConflictModalIfOpen(view, mainApp)
-				})
-			}()
-			return nil
-
-		case 't':
-			// Set immediate feedback
-			if mainApp.State.Selection.IsSpecSelected() {
-				if projIdx, specIdx := mainApp.GetSelectedSpec(); projIdx >= 0 && specIdx >= 0 {
-					mainApp.SetStatus(ui.StatusInfo, "Terminating "+mainApp.State.Projects[projIdx].Specs[specIdx].Name+"...")
-				}
-			} else if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-				mainApp.SetStatus(ui.StatusInfo, "Terminating "+mainApp.State.Projects[projIdx].File.DisplayName()+"...")
-			}
-			view.UpdateStatus()
-			go func() {
-				mainApp.TerminateSelected(ctx)
-				mainApp.RefreshSessions(ctx)
-				view.App.QueueUpdateDraw(func() {
-					view.RefreshList()
-					view.UpdateStatus()
-					updateConflictModalIfOpen(view, mainApp)
-				})
-			}()
-			return nil
-
-		case 'f':
-			// Set immediate feedback
-			if mainApp.State.Selection.IsSpecSelected() {
-				if projIdx, specIdx := mainApp.GetSelectedSpec(); projIdx >= 0 && specIdx >= 0 {
-					mainApp.SetStatus(ui.StatusInfo, "Flushing "+mainApp.State.Projects[projIdx].Specs[specIdx].Name+"...")
-				}
-			} else if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-				mainApp.SetStatus(ui.StatusInfo, "Flushing "+mainApp.State.Projects[projIdx].File.DisplayName()+"...")
-			}
-			view.UpdateStatus()
-			go func() {
-				mainApp.FlushSelected(ctx)
-				mainApp.RefreshSessions(ctx)
-				view.App.QueueUpdateDraw(func() {
-					view.RefreshList()
-					view.UpdateStatus()
-					updateConflictModalIfOpen(view, mainApp)
-				})
-			}()
-			return nil
-
-		case 'p', ' ':
-			go func() {
-				mainApp.TogglePauseSelected(ctx)
-				mainApp.RefreshSessions(ctx)
-				view.App.QueueUpdateDraw(func() {
-					view.RefreshList()
-					view.UpdateStatus()
-					updateConflictModalIfOpen(view, mainApp)
-				})
-			}()
-			return nil
-
-		case 'u':
-			go func() {
-				mainApp.ResumeSelected(ctx)
-				mainApp.RefreshSessions(ctx)
-				view.App.QueueUpdateDraw(func() {
-					view.RefreshList()
-					view.UpdateStatus()
-					updateConflictModalIfOpen(view, mainApp)
-				})
-			}()
-			return nil
-
-		case 'P':
-			// Set immediate feedback
-			if mainApp.State.Selection.IsSpecSelected() {
-				if projIdx, specIdx := mainApp.GetSelectedSpec(); projIdx >= 0 && specIdx >= 0 {
-					mainApp.SetStatus(ui.StatusInfo, "Creating push session for "+mainApp.State.Projects[projIdx].Specs[specIdx].Name+"...")
-				}
-			} else if projIdx := mainApp.GetSelectedProjectIndex(); projIdx >= 0 {
-				mainApp.SetStatus(ui.StatusInfo, "Creating push sessions for "+mainApp.State.Projects[projIdx].File.DisplayName()+"...")
-			}
-			view.UpdateStatus()
-			go func() {
-				if mainApp.State.Selection.IsSpecSelected() {
-					mainApp.PushSelectedSpec(ctx)
-				} else {
-					mainApp.PushSelectedProject(ctx)
-				}
-				mainApp.RefreshSessions(ctx)
-				view.App.QueueUpdateDraw(func() {
-					view.RefreshList()
-					view.UpdateStatus()
-					updateConflictModalIfOpen(view, mainApp)
-				})
-			}()
-			return nil
-
-		case 'b':
-			if mainApp.State.ViewingConflicts {
-				go func() {
-					mainApp.PushConflictsToBeta(ctx)
-					mainApp.RefreshSessions(ctx)
-					view.App.QueueUpdateDraw(func() {
-						view.RefreshList()
-						view.UpdateStatus()
-						updateConflictModalIfOpen(view, mainApp)
-					})
-				}()
-			}
-			return nil
-
-		case 'i':
-			if mainApp.State.ViewingSyncStatus {
-				mainApp.ToggleSyncStatusView()
-				view.HideSyncStatusModal()
-			} else {
-				mainApp.ToggleSyncStatusView()
-				session := mainApp.GetSelectedSession()
-				view.ShowSyncStatusModal(session)
-			}
-			return nil
-		}
-	}
-
-	return event
-}
-
-func autoRefresh(view *ui.View, mainApp *app.App, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if mainApp.ShouldQuit() {
-			return
-		}
-
-		ctx := context.Background()
-		if err := mainApp.RefreshSessions(ctx); err == nil {
-			view.App.QueueUpdateDraw(func() {
-				view.RefreshList()
-				view.UpdateStatus()
-				updateConflictModalIfOpen(view, mainApp)
-			})
-		}
-	}
-}
-
-// updateConflictModalIfOpen updates the conflict modal with current data if it's open.
-func updateConflictModalIfOpen(view *ui.View, mainApp *app.App) {
-	if mainApp.State.ViewingConflicts {
-		conflicts := mainApp.GetConflictsForSelection()
-		view.UpdateConflictModalIfOpen(conflicts)
 	}
 }

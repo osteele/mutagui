@@ -5,65 +5,142 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gdamore/tcell/v2"
+	"github.com/charmbracelet/lipgloss"
 )
 
-// ColorScheme defines the colors used in the UI.
-type ColorScheme struct {
-	HeaderFG        tcell.Color
-	SessionNameFG   tcell.Color
-	SessionAlphaFG  tcell.Color
-	SessionBetaFG   tcell.Color
-	SessionStatusFG tcell.Color
-	StatusRunningFG tcell.Color
-	StatusPausedFG  tcell.Color
-	SelectionBG     tcell.Color
-	StatusMessageFG tcell.Color
-	StatusErrorFG   tcell.Color
-	HelpKeyFG       tcell.Color
-	HelpTextFG      tcell.Color
+// Theme defines the styles used in the UI.
+type Theme struct {
+	// Base styles
+	App lipgloss.Style
+
+	// Header
+	Header      lipgloss.Style
+	HeaderTitle lipgloss.Style
+
+	// List styles
+	ListBorder       lipgloss.Style
+	ListTitle        lipgloss.Style
+	SelectedItem     lipgloss.Style
+	UnselectedItem   lipgloss.Style
+	ProjectHeader    lipgloss.Style
+	SpecRow          lipgloss.Style
+	SessionName      lipgloss.Style
+	SessionAlpha     lipgloss.Style
+	SessionBeta      lipgloss.Style
+	SessionStatus    lipgloss.Style
+	StatusRunning    lipgloss.Style
+	StatusPaused     lipgloss.Style
+	StatusNotRunning lipgloss.Style
+
+	// Status bar
+	StatusBar     lipgloss.Style
+	StatusMessage lipgloss.Style
+	StatusWarning lipgloss.Style
+	StatusError   lipgloss.Style
+
+	// Help bar
+	HelpBar  lipgloss.Style
+	HelpKey  lipgloss.Style
+	HelpText lipgloss.Style
+	HelpSep  lipgloss.Style
+
+	// Modal styles
+	ModalBorder  lipgloss.Style
+	ModalTitle   lipgloss.Style
+	ModalContent lipgloss.Style
+	ModalHelp    lipgloss.Style
+
+	// Conflict modal
+	ConflictAlpha lipgloss.Style
+	ConflictBeta  lipgloss.Style
 }
 
-// DarkTheme returns a color scheme for dark terminals.
-// Uses standard ANSI colors (0-15) which terminals can remap to their palette.
-func DarkTheme() ColorScheme {
-	return ColorScheme{
-		HeaderFG:        tcell.ColorAqua,    // Bright cyan (ANSI 14)
-		SessionNameFG:   tcell.ColorWhite,   // Bright white (ANSI 15)
-		SessionAlphaFG:  tcell.ColorBlue,    // Blue (ANSI 4)
-		SessionBetaFG:   tcell.ColorFuchsia, // Bright magenta (ANSI 13)
-		SessionStatusFG: tcell.ColorSilver,  // Light gray (ANSI 7)
-		StatusRunningFG: tcell.ColorLime,    // Bright green (ANSI 10)
-		StatusPausedFG:  tcell.ColorYellow,  // Bright yellow (ANSI 11)
-		SelectionBG:     tcell.ColorNavy,    // Dark blue (ANSI 4) - visible selection
-		StatusMessageFG: tcell.ColorYellow,  // Bright yellow (ANSI 11)
-		StatusErrorFG:   tcell.ColorRed,     // Red (ANSI 1)
-		HelpKeyFG:       tcell.ColorAqua,    // Bright cyan (ANSI 14)
-		HelpTextFG:      tcell.ColorWhite,   // Bright white (ANSI 15)
+// DarkTheme returns a theme for dark terminals.
+func DarkTheme() Theme {
+	return Theme{
+		App: lipgloss.NewStyle(),
+
+		Header:      lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1),
+		HeaderTitle: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")), // Cyan
+
+		ListBorder:       lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")),
+		ListTitle:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")),
+		SelectedItem:     lipgloss.NewStyle().Background(lipgloss.Color("17")).Foreground(lipgloss.Color("15")), // Dark blue bg
+		UnselectedItem:   lipgloss.NewStyle(),
+		ProjectHeader:    lipgloss.NewStyle().Bold(true),
+		SpecRow:          lipgloss.NewStyle(),
+		SessionName:      lipgloss.NewStyle().Foreground(lipgloss.Color("15")),  // White
+		SessionAlpha:     lipgloss.NewStyle().Foreground(lipgloss.Color("12")),  // Blue
+		SessionBeta:      lipgloss.NewStyle().Foreground(lipgloss.Color("13")),  // Magenta
+		SessionStatus:    lipgloss.NewStyle().Foreground(lipgloss.Color("7")),   // Silver
+		StatusRunning:    lipgloss.NewStyle().Foreground(lipgloss.Color("10")),  // Lime
+		StatusPaused:     lipgloss.NewStyle().Foreground(lipgloss.Color("11")),  // Yellow
+		StatusNotRunning: lipgloss.NewStyle().Foreground(lipgloss.Color("240")), // Gray
+
+		StatusBar:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1),
+		StatusMessage: lipgloss.NewStyle().Foreground(lipgloss.Color("11")), // Yellow
+		StatusWarning: lipgloss.NewStyle().Foreground(lipgloss.Color("11")), // Yellow
+		StatusError:   lipgloss.NewStyle().Foreground(lipgloss.Color("9")),  // Red
+
+		HelpBar:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1),
+		HelpKey:  lipgloss.NewStyle().Foreground(lipgloss.Color("14")), // Cyan
+		HelpText: lipgloss.NewStyle().Foreground(lipgloss.Color("15")), // White
+		HelpSep:  lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
+
+		ModalBorder:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("14")).Padding(1, 2),
+		ModalTitle:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")),
+		ModalContent: lipgloss.NewStyle(),
+		ModalHelp:    lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true),
+
+		ConflictAlpha: lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
+		ConflictBeta:  lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
 	}
 }
 
-// LightTheme returns a color scheme for light terminals.
-func LightTheme() ColorScheme {
-	return ColorScheme{
-		HeaderFG:        tcell.ColorBlue,
-		SessionNameFG:   tcell.ColorBlack,
-		SessionAlphaFG:  tcell.ColorDarkGray,
-		SessionBetaFG:   tcell.NewRGBColor(128, 0, 128),   // Purple
-		SessionStatusFG: tcell.NewRGBColor(64, 64, 64),    // Dark gray
-		StatusRunningFG: tcell.NewRGBColor(0, 128, 0),     // Dark green
-		StatusPausedFG:  tcell.NewRGBColor(184, 134, 11),  // Dark goldenrod
-		SelectionBG:     tcell.NewRGBColor(200, 200, 200), // Light gray
-		StatusMessageFG: tcell.NewRGBColor(184, 134, 11),  // Dark goldenrod
-		StatusErrorFG:   tcell.ColorRed,
-		HelpKeyFG:       tcell.ColorBlue,
-		HelpTextFG:      tcell.ColorBlack,
+// LightTheme returns a theme for light terminals.
+func LightTheme() Theme {
+	return Theme{
+		App: lipgloss.NewStyle(),
+
+		Header:      lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1),
+		HeaderTitle: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")), // Blue
+
+		ListBorder:       lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")),
+		ListTitle:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")),
+		SelectedItem:     lipgloss.NewStyle().Background(lipgloss.Color("252")).Foreground(lipgloss.Color("0")), // Light gray bg
+		UnselectedItem:   lipgloss.NewStyle(),
+		ProjectHeader:    lipgloss.NewStyle().Bold(true),
+		SpecRow:          lipgloss.NewStyle(),
+		SessionName:      lipgloss.NewStyle().Foreground(lipgloss.Color("0")),   // Black
+		SessionAlpha:     lipgloss.NewStyle().Foreground(lipgloss.Color("240")), // Dark gray
+		SessionBeta:      lipgloss.NewStyle().Foreground(lipgloss.Color("5")),   // Purple
+		SessionStatus:    lipgloss.NewStyle().Foreground(lipgloss.Color("240")), // Dark gray
+		StatusRunning:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),   // Dark green
+		StatusPaused:     lipgloss.NewStyle().Foreground(lipgloss.Color("3")),   // Dark yellow/brown
+		StatusNotRunning: lipgloss.NewStyle().Foreground(lipgloss.Color("245")), // Gray
+
+		StatusBar:     lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1),
+		StatusMessage: lipgloss.NewStyle().Foreground(lipgloss.Color("3")), // Dark yellow
+		StatusWarning: lipgloss.NewStyle().Foreground(lipgloss.Color("3")), // Dark yellow
+		StatusError:   lipgloss.NewStyle().Foreground(lipgloss.Color("1")), // Red
+
+		HelpBar:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1),
+		HelpKey:  lipgloss.NewStyle().Foreground(lipgloss.Color("4")), // Blue
+		HelpText: lipgloss.NewStyle().Foreground(lipgloss.Color("0")), // Black
+		HelpSep:  lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
+
+		ModalBorder:  lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("4")).Padding(1, 2),
+		ModalTitle:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")),
+		ModalContent: lipgloss.NewStyle(),
+		ModalHelp:    lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true),
+
+		ConflictAlpha: lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
+		ConflictBeta:  lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
 	}
 }
 
 // DetectTheme returns the appropriate theme based on MUTAGUI_THEME env var.
-// Defaults to light theme since automatic detection is unreliable across terminals.
-func DetectTheme() ColorScheme {
+func DetectTheme() Theme {
 	if override := os.Getenv("MUTAGUI_THEME"); override != "" {
 		switch strings.ToLower(override) {
 		case "dark":
@@ -71,4 +148,16 @@ func DetectTheme() ColorScheme {
 		}
 	}
 	return LightTheme()
+}
+
+// GetTheme returns the theme based on the theme name.
+func GetTheme(name string) Theme {
+	switch strings.ToLower(name) {
+	case "dark":
+		return DarkTheme()
+	case "light":
+		return LightTheme()
+	default:
+		return DetectTheme()
+	}
 }

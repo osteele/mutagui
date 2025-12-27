@@ -16,36 +16,33 @@ import (
 	"github.com/osteele/mutagui/internal/ui"
 )
 
+// AppState holds the application state shared between App and UI.
+type AppState struct {
+	Projects      []*project.Project
+	Selection     *ui.SelectionManager
+	StatusMessage *ui.StatusMessage
+	LastRefresh   *time.Time
+	ShowPaths     bool
+}
+
 // App represents the application state.
 type App struct {
 	Config *config.Config
 	Client *mutagen.Client
-	State  *ui.AppState
+	State  *AppState
 
 	shouldQuit bool
 }
 
 // NewApp creates a new App with the given configuration.
 func NewApp(cfg *config.Config) *App {
-	// Determine theme
-	var colorScheme ui.ColorScheme
-	switch cfg.UI.Theme {
-	case config.ThemeModeLight:
-		colorScheme = ui.LightTheme()
-	case config.ThemeModeDark:
-		colorScheme = ui.DarkTheme()
-	default:
-		colorScheme = ui.DetectTheme()
-	}
-
 	return &App{
 		Config: cfg,
 		Client: mutagen.NewClient(30 * time.Second),
-		State: &ui.AppState{
-			ColorScheme: colorScheme,
-			Projects:    []*project.Project{},
-			Selection:   ui.NewSelectionManager(),
-			ShowPaths:   cfg.UI.DefaultDisplayMode == config.DisplayModePaths,
+		State: &AppState{
+			Projects:  []*project.Project{},
+			Selection: ui.NewSelectionManager(),
+			ShowPaths: cfg.UI.DefaultDisplayMode == config.DisplayModePaths,
 		},
 	}
 }
@@ -115,21 +112,6 @@ func (a *App) Quit() {
 // ShouldQuit returns true if the application should quit.
 func (a *App) ShouldQuit() bool {
 	return a.shouldQuit
-}
-
-// ToggleHelp toggles the help view.
-func (a *App) ToggleHelp() {
-	a.State.ViewingHelp = !a.State.ViewingHelp
-}
-
-// ToggleConflictView toggles the conflict view.
-func (a *App) ToggleConflictView() {
-	a.State.ViewingConflicts = !a.State.ViewingConflicts
-}
-
-// ToggleSyncStatusView toggles the sync status view.
-func (a *App) ToggleSyncStatusView() {
-	a.State.ViewingSyncStatus = !a.State.ViewingSyncStatus
 }
 
 // ToggleDisplayMode toggles between showing paths and last refresh time.
@@ -631,18 +613,48 @@ func (a *App) PushSelectedProject(ctx context.Context) {
 
 // PushConflictsToBeta resolves conflicts by pushing alpha changes to beta.
 // This terminates the existing session and creates a one-way push session.
+// Works for both spec-level and project-level selections.
 func (a *App) PushConflictsToBeta(ctx context.Context) {
+	// Check if a spec is selected
 	projIdx, specIdx := a.GetSelectedSpec()
-	if projIdx < 0 || specIdx < 0 {
-		a.SetStatus(ui.StatusWarning, "No spec selected")
+	if projIdx >= 0 && specIdx >= 0 {
+		// Single spec selected - push just that spec
+		a.pushSpecConflictsToBeta(ctx, projIdx, specIdx)
 		return
 	}
 
+	// Check if a project is selected
+	projIdx = a.GetSelectedProjectIndex()
+	if projIdx < 0 || projIdx >= len(a.State.Projects) {
+		a.SetStatus(ui.StatusWarning, "No project or spec selected")
+		return
+	}
+
+	// Project selected - push all specs with conflicts
+	proj := a.State.Projects[projIdx]
+	pushed := 0
+	for i := range proj.Specs {
+		spec := &proj.Specs[i]
+		if spec.RunningSession != nil && spec.RunningSession.HasConflicts() {
+			a.pushSpecConflictsToBeta(ctx, projIdx, i)
+			pushed++
+		}
+	}
+
+	if pushed == 0 {
+		a.SetStatus(ui.StatusWarning, "No conflicts to resolve")
+	} else {
+		a.SetStatus(ui.StatusInfo, fmt.Sprintf("Created push sessions for %d spec(s)", pushed))
+	}
+}
+
+// pushSpecConflictsToBeta handles pushing a single spec's conflicts to beta.
+func (a *App) pushSpecConflictsToBeta(ctx context.Context, projIdx, specIdx int) {
 	proj := a.State.Projects[projIdx]
 	spec := &proj.Specs[specIdx]
 	sessionDef, exists := proj.File.Sessions[spec.Name]
 	if !exists {
-		a.SetStatus(ui.StatusError, "Session definition not found")
+		a.SetStatus(ui.StatusError, "Session definition not found for "+spec.Name)
 		return
 	}
 
@@ -663,7 +675,6 @@ func (a *App) PushConflictsToBeta(ctx context.Context) {
 		a.SetStatus(ui.StatusError, "Failed to create push session: "+err.Error())
 		return
 	}
-	a.SetStatus(ui.StatusInfo, "Created push session to resolve conflicts: "+spec.Name)
 }
 
 // GetEditor returns the configured editor from environment variables.
