@@ -92,6 +92,7 @@ type KeyMap struct {
 	Right       key.Binding
 	Enter       key.Binding
 	Quit        key.Binding
+	Suspend     key.Binding
 	Help        key.Binding
 	Refresh     key.Binding
 	Start       key.Binding
@@ -137,6 +138,10 @@ func DefaultKeyMap() KeyMap {
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
 			key.WithHelp("q", "quit"),
+		),
+		Suspend: key.NewBinding(
+			key.WithKeys("ctrl+z"),
+			key.WithHelp("^Z", "suspend"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?", "h"),
@@ -347,6 +352,9 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Quit):
 		return m, tea.Quit
+
+	case key.Matches(msg, keys.Suspend):
+		return m, tea.Suspend
 
 	case key.Matches(msg, keys.Help):
 		m.ActiveModal = ModalHelp
