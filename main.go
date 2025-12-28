@@ -94,47 +94,47 @@ func run() error {
 		return err
 	}
 
-	model.OnStart = func(ctx context.Context) {
+	model.OnStart = func(ctx context.Context) *ui.StatusMessage {
 		if model.Selection.IsSpecSelected() {
 			mainApp.StartSelectedSpec(ctx)
 		} else {
 			mainApp.StartSelectedProject(ctx)
 		}
-		syncStatus(mainApp, &model)
+		return getStatus(mainApp)
 	}
 
-	model.OnTerminate = func(ctx context.Context) {
+	model.OnTerminate = func(ctx context.Context) *ui.StatusMessage {
 		mainApp.TerminateSelected(ctx)
-		syncStatus(mainApp, &model)
+		return getStatus(mainApp)
 	}
 
-	model.OnFlush = func(ctx context.Context) {
+	model.OnFlush = func(ctx context.Context) *ui.StatusMessage {
 		mainApp.FlushSelected(ctx)
-		syncStatus(mainApp, &model)
+		return getStatus(mainApp)
 	}
 
-	model.OnPause = func(ctx context.Context) {
+	model.OnPause = func(ctx context.Context) *ui.StatusMessage {
 		mainApp.TogglePauseSelected(ctx)
-		syncStatus(mainApp, &model)
+		return getStatus(mainApp)
 	}
 
-	model.OnResume = func(ctx context.Context) {
+	model.OnResume = func(ctx context.Context) *ui.StatusMessage {
 		mainApp.ResumeSelected(ctx)
-		syncStatus(mainApp, &model)
+		return getStatus(mainApp)
 	}
 
-	model.OnPush = func(ctx context.Context) {
+	model.OnPush = func(ctx context.Context) *ui.StatusMessage {
 		if model.Selection.IsSpecSelected() {
 			mainApp.PushSelectedSpec(ctx)
 		} else {
 			mainApp.PushSelectedProject(ctx)
 		}
-		syncStatus(mainApp, &model)
+		return getStatus(mainApp)
 	}
 
-	model.OnPushConflicts = func(ctx context.Context) {
+	model.OnPushConflicts = func(ctx context.Context) *ui.StatusMessage {
 		mainApp.PushConflictsToBeta(ctx)
-		syncStatus(mainApp, &model)
+		return getStatus(mainApp)
 	}
 
 	model.OnToggleFold = func(projIdx int) {
@@ -179,12 +179,13 @@ func run() error {
 	return nil
 }
 
-// syncStatus copies status message from app to model
-func syncStatus(mainApp *app.App, model *ui.Model) {
+// getStatus returns the current status message from the app as a UI status message
+func getStatus(mainApp *app.App) *ui.StatusMessage {
 	if mainApp.State.StatusMessage != nil {
-		model.StatusMessage = &ui.StatusMessage{
+		return &ui.StatusMessage{
 			Type: ui.StatusMessageType(mainApp.State.StatusMessage.Type),
 			Text: mainApp.State.StatusMessage.Text,
 		}
 	}
+	return nil
 }

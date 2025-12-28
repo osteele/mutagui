@@ -167,9 +167,9 @@ func (s *SyncSession) StatusText() string {
 	case strings.Contains(status, "watching"):
 		return "Watching"
 	case strings.Contains(status, "scanning"):
-		return "Scanning"
+		return s.scanningStatusText()
 	case strings.Contains(status, "staging"):
-		return "Staging"
+		return s.stagingStatusText()
 	case strings.Contains(status, "reconcil"):
 		return "Reconciling"
 	case strings.Contains(status, "saving"):
@@ -185,6 +185,113 @@ func (s *SyncSession) StatusText() string {
 	default:
 		return "Unknown"
 	}
+}
+
+// scanningStatusText returns a detailed scanning status including which endpoint and file count.
+func (s *SyncSession) scanningStatusText() string {
+	status := strings.ToLower(s.Status)
+
+	// Determine which endpoint is being scanned
+	endpoint := ""
+	var ep *Endpoint
+	if strings.Contains(status, "alpha") {
+		endpoint = "α"
+		ep = &s.Alpha
+	} else if strings.Contains(status, "beta") {
+		endpoint = "β"
+		ep = &s.Beta
+	}
+
+	// Build status with file count if available
+	if ep != nil && ep.Files != nil && *ep.Files > 0 {
+		return formatScanProgress(endpoint, *ep.Files)
+	}
+	if endpoint != "" {
+		return "Scanning " + endpoint
+	}
+	return "Scanning"
+}
+
+// stagingStatusText returns a detailed staging status including progress if available.
+func (s *SyncSession) stagingStatusText() string {
+	status := strings.ToLower(s.Status)
+
+	// Determine which endpoint is staging
+	endpoint := ""
+	var ep *Endpoint
+	if strings.Contains(status, "alpha") {
+		endpoint = "α"
+		ep = &s.Alpha
+	} else if strings.Contains(status, "beta") {
+		endpoint = "β"
+		ep = &s.Beta
+	}
+
+	// Check for staging progress
+	if ep != nil && ep.StagingProgress != nil {
+		prog := ep.StagingProgress
+		if prog.ReceivedFiles != nil && prog.ExpectedFiles != nil && *prog.ExpectedFiles > 0 {
+			return formatStagingProgress(endpoint, *prog.ReceivedFiles, *prog.ExpectedFiles)
+		}
+	}
+	if endpoint != "" {
+		return "Staging " + endpoint
+	}
+	return "Staging"
+}
+
+// formatScanProgress formats a scanning progress message.
+func formatScanProgress(endpoint string, files uint64) string {
+	if files >= 1000 {
+		return "Scanning " + endpoint + " (" + formatNumber(files) + " files)"
+	}
+	return "Scanning " + endpoint
+}
+
+// formatStagingProgress formats a staging progress message.
+func formatStagingProgress(endpoint string, received, expected uint64) string {
+	pct := (received * 100) / expected
+	return "Staging " + endpoint + " (" + formatNumber(received) + "/" + formatNumber(expected) + " " + formatNumber(pct) + "%)"
+}
+
+// formatNumber formats a number with commas for readability.
+func formatNumber(n uint64) string {
+	s := ""
+	for n > 0 {
+		if s != "" {
+			s = "," + s
+		}
+		if n >= 1000 {
+			s = padLeft(n%1000, 3) + s
+		} else {
+			s = uintToString(n%1000) + s
+		}
+		n /= 1000
+	}
+	if s == "" {
+		return "0"
+	}
+	return s
+}
+
+func uintToString(n uint64) string {
+	if n == 0 {
+		return "0"
+	}
+	digits := ""
+	for n > 0 {
+		digits = string(rune('0'+n%10)) + digits
+		n /= 10
+	}
+	return digits
+}
+
+func padLeft(n uint64, width int) string {
+	s := uintToString(n)
+	for len(s) < width {
+		s = "0" + s
+	}
+	return s
 }
 
 // homeDir returns the user's home directory.

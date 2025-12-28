@@ -183,8 +183,12 @@ func TestSyncSession_StatusText(t *testing.T) {
 		want   string
 	}{
 		{"watching", "Watching for changes", "Watching"},
-		{"scanning", "Scanning alpha", "Scanning"},
-		{"staging", "Staging files", "Staging"},
+		{"scanning_alpha", "Scanning alpha", "Scanning α"},
+		{"scanning_beta", "Scanning beta", "Scanning β"},
+		{"scanning_generic", "Scanning", "Scanning"},
+		{"staging_alpha", "Staging alpha", "Staging α"},
+		{"staging_beta", "Staging beta", "Staging β"},
+		{"staging_generic", "Staging files", "Staging"},
 		{"reconciling", "Reconciling changes", "Reconciling"},
 		{"saving", "Saving state", "Saving"},
 		{"connecting", "Connecting to beta", "Connecting"},
@@ -200,6 +204,64 @@ func TestSyncSession_StatusText(t *testing.T) {
 			got := session.StatusText()
 			if got != tt.want {
 				t.Errorf("StatusText() for status %q = %q, want %q", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSyncSession_StatusText_WithProgress(t *testing.T) {
+	files := uint64(5000)
+	session := SyncSession{
+		Status: "Scanning alpha",
+		Alpha:  Endpoint{Files: &files},
+	}
+	got := session.StatusText()
+	want := "Scanning α (5,000 files)"
+	if got != want {
+		t.Errorf("StatusText() with file count = %q, want %q", got, want)
+	}
+}
+
+func TestSyncSession_StatusText_StagingProgress(t *testing.T) {
+	received := uint64(50)
+	expected := uint64(100)
+	session := SyncSession{
+		Status: "Staging beta",
+		Beta: Endpoint{
+			StagingProgress: &StagingProgress{
+				ReceivedFiles: &received,
+				ExpectedFiles: &expected,
+			},
+		},
+	}
+	got := session.StatusText()
+	want := "Staging β (50/100 50%)"
+	if got != want {
+		t.Errorf("StatusText() with staging progress = %q, want %q", got, want)
+	}
+}
+
+func TestFormatNumber(t *testing.T) {
+	tests := []struct {
+		n    uint64
+		want string
+	}{
+		{0, "0"},
+		{1, "1"},
+		{123, "123"},
+		{1000, "1,000"},
+		{1234, "1,234"},
+		{12345, "12,345"},
+		{123456, "123,456"},
+		{1234567, "1,234,567"},
+		{80928, "80,928"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := formatNumber(tt.n)
+			if got != tt.want {
+				t.Errorf("formatNumber(%d) = %q, want %q", tt.n, got, tt.want)
 			}
 		})
 	}

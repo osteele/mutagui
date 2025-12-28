@@ -59,14 +59,15 @@ type Model struct {
 	LoadingText string
 
 	// Callbacks for operations (set by main)
+	// Each callback returns a status message describing the result
 	OnRefresh          func(ctx context.Context) error
-	OnStart            func(ctx context.Context)
-	OnTerminate        func(ctx context.Context)
-	OnFlush            func(ctx context.Context)
-	OnPause            func(ctx context.Context)
-	OnResume           func(ctx context.Context)
-	OnPush             func(ctx context.Context)
-	OnPushConflicts    func(ctx context.Context)
+	OnStart            func(ctx context.Context) *StatusMessage
+	OnTerminate        func(ctx context.Context) *StatusMessage
+	OnFlush            func(ctx context.Context) *StatusMessage
+	OnPause            func(ctx context.Context) *StatusMessage
+	OnResume           func(ctx context.Context) *StatusMessage
+	OnPush             func(ctx context.Context) *StatusMessage
+	OnPushConflicts    func(ctx context.Context) *StatusMessage
 	OnToggleFold       func(projIdx int)
 	OnOpenEditor       func(projIdx int) error
 	GetConflicts       func() []SessionConflicts
@@ -204,11 +205,14 @@ func (m Model) Init() tea.Cmd {
 
 // Message types for async operations.
 type (
-	RefreshDoneMsg     struct{ Err error }
-	OperationDoneMsg   struct{ Err error }
-	TickMsg            time.Time
-	EditorSuspendMsg   struct{ ProjIdx int }
-	ClearFlashMsg      struct{}
+	RefreshDoneMsg   struct{ Err error }
+	OperationDoneMsg struct {
+		Err    error
+		Status *StatusMessage // Optional status message to display
+	}
+	TickMsg          time.Time
+	EditorSuspendMsg struct{ ProjIdx int }
+	ClearFlashMsg    struct{}
 )
 
 // Update implements tea.Model.
@@ -239,6 +243,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.LoadingText = ""
 		if msg.Err != nil {
 			m.StatusMessage = &StatusMessage{Type: StatusError, Text: msg.Err.Error()}
+		} else if msg.Status != nil {
+			m.StatusMessage = msg.Status
 		}
 		return m, m.flashCmd()
 
@@ -471,77 +477,77 @@ func (m Model) refreshCmd() tea.Cmd {
 func (m Model) startCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		m.OnStart(ctx)
+		status := m.OnStart(ctx)
 		if m.OnRefresh != nil {
 			m.OnRefresh(ctx)
 		}
-		return OperationDoneMsg{}
+		return OperationDoneMsg{Status: status}
 	}
 }
 
 func (m Model) terminateCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		m.OnTerminate(ctx)
+		status := m.OnTerminate(ctx)
 		if m.OnRefresh != nil {
 			m.OnRefresh(ctx)
 		}
-		return OperationDoneMsg{}
+		return OperationDoneMsg{Status: status}
 	}
 }
 
 func (m Model) flushCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		m.OnFlush(ctx)
+		status := m.OnFlush(ctx)
 		if m.OnRefresh != nil {
 			m.OnRefresh(ctx)
 		}
-		return OperationDoneMsg{}
+		return OperationDoneMsg{Status: status}
 	}
 }
 
 func (m Model) pauseCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		m.OnPause(ctx)
+		status := m.OnPause(ctx)
 		if m.OnRefresh != nil {
 			m.OnRefresh(ctx)
 		}
-		return OperationDoneMsg{}
+		return OperationDoneMsg{Status: status}
 	}
 }
 
 func (m Model) resumeCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		m.OnResume(ctx)
+		status := m.OnResume(ctx)
 		if m.OnRefresh != nil {
 			m.OnRefresh(ctx)
 		}
-		return OperationDoneMsg{}
+		return OperationDoneMsg{Status: status}
 	}
 }
 
 func (m Model) pushCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		m.OnPush(ctx)
+		status := m.OnPush(ctx)
 		if m.OnRefresh != nil {
 			m.OnRefresh(ctx)
 		}
-		return OperationDoneMsg{}
+		return OperationDoneMsg{Status: status}
 	}
 }
 
 func (m Model) pushConflictsCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		m.OnPushConflicts(ctx)
+		status := m.OnPushConflicts(ctx)
 		if m.OnRefresh != nil {
 			m.OnRefresh(ctx)
 		}
-		return OperationDoneMsg{}
+		return OperationDoneMsg{Status: status}
 	}
 }
 
