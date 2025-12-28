@@ -201,3 +201,31 @@ func TestLoad_EmptyPath(t *testing.T) {
 		t.Errorf("UI.Theme = %v, want %v", cfg.UI.Theme, defaultCfg.UI.Theme)
 	}
 }
+
+func TestLoad_Confirmations(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	content := `
+[confirmations]
+push_to_beta = false
+pull_to_alpha = true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	withConfigPath(t, configPath)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Confirmations.PushToBeta != false {
+		t.Errorf("Confirmations.PushToBeta = %v, want false", cfg.Confirmations.PushToBeta)
+	}
+	if cfg.Confirmations.PullToAlpha != true {
+		t.Errorf("Confirmations.PullToAlpha = %v, want true", cfg.Confirmations.PullToAlpha)
+	}
+}

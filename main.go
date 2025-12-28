@@ -137,6 +137,15 @@ func run() error {
 		return getStatus(mainApp)
 	}
 
+	model.OnPullConflicts = func(ctx context.Context) *ui.StatusMessage {
+		mainApp.PullConflictsToAlpha(ctx)
+		return getStatus(mainApp)
+	}
+
+	// Set confirmation preferences from config
+	model.ConfirmPushToBeta = cfg.Confirmations.PushToBeta
+	model.ConfirmPullToAlpha = cfg.Confirmations.PullToAlpha
+
 	model.OnToggleFold = func(projIdx int) {
 		mainApp.ToggleProjectFold(projIdx)
 	}

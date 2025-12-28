@@ -43,11 +43,20 @@ type ProjectConfig struct {
 	ExcludePatterns []string `toml:"exclude_patterns"`
 }
 
+// ConfirmationsConfig contains settings for confirmation dialogs.
+type ConfirmationsConfig struct {
+	// PushToBeta controls whether to show confirmation before pushing to beta
+	PushToBeta bool `toml:"push_to_beta"`
+	// PullToAlpha controls whether to show confirmation before pulling to alpha
+	PullToAlpha bool `toml:"pull_to_alpha"`
+}
+
 // Config represents the application configuration.
 type Config struct {
-	UI       UIConfig      `toml:"ui"`
-	Refresh  RefreshConfig `toml:"refresh"`
-	Projects ProjectConfig `toml:"projects"`
+	UI            UIConfig            `toml:"ui"`
+	Refresh       RefreshConfig       `toml:"refresh"`
+	Projects      ProjectConfig       `toml:"projects"`
+	Confirmations ConfirmationsConfig `toml:"confirmations"`
 }
 
 // DefaultConfig returns the default configuration.
@@ -64,6 +73,10 @@ func DefaultConfig() *Config {
 		Projects: ProjectConfig{
 			SearchPaths:     []string{},
 			ExcludePatterns: []string{"node_modules", ".git", "target"},
+		},
+		Confirmations: ConfirmationsConfig{
+			PushToBeta:  true, // Confirm before pushing alpha → beta
+			PullToAlpha: true, // Confirm before pulling beta → alpha
 		},
 	}
 }
@@ -96,11 +109,12 @@ func Load() (*Config, error) {
 	return config, nil
 }
 
-// defaultConfigPath returns the standard config file path for the current platform.
+// defaultConfigPath returns the standard config file path.
+// Uses ~/.config/mutagui/config.toml following XDG conventions.
 func defaultConfigPath() string {
-	configDir, err := os.UserConfigDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(configDir, "mutagui", "config.toml")
+	return filepath.Join(home, ".config", "mutagui", "config.toml")
 }

@@ -22,6 +22,8 @@ const (
 	ModalHelp
 	ModalConflicts
 	ModalSyncStatus
+	ModalConfirmPush
+	ModalConfirmPull
 )
 
 // StatusMessageType represents the type of status message.
@@ -68,10 +70,15 @@ type Model struct {
 	OnResume           func(ctx context.Context) *StatusMessage
 	OnPush             func(ctx context.Context) *StatusMessage
 	OnPushConflicts    func(ctx context.Context) *StatusMessage
+	OnPullConflicts    func(ctx context.Context) *StatusMessage
 	OnToggleFold       func(projIdx int)
 	OnOpenEditor       func(projIdx int) error
 	GetConflicts       func() []SessionConflicts
 	GetSelectedSession func() *mutagen.SyncSession
+
+	// Confirmation settings (from config)
+	ConfirmPushToBeta  bool
+	ConfirmPullToAlpha bool
 
 	// For terminal editor support
 	SuspendAndRun func(func()) tea.Cmd
@@ -98,6 +105,9 @@ type KeyMap struct {
 	Edit        key.Binding
 	ToggleMode  key.Binding
 	PushToBeta  key.Binding
+	PullToAlpha key.Binding
+	ConfirmYes  key.Binding
+	ConfirmNo   key.Binding
 	Escape      key.Binding
 }
 
@@ -113,8 +123,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("↓/j", "down"),
 		),
 		Left: key.NewBinding(
-			key.WithKeys("left", "h"),
-			key.WithHelp("←/h", "fold"),
+			key.WithKeys("left"),
+			key.WithHelp("←", "fold"),
 		),
 		Right: key.NewBinding(
 			key.WithKeys("right", "l"),
@@ -129,8 +139,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("q", "quit"),
 		),
 		Help: key.NewBinding(
-			key.WithKeys("?"),
-			key.WithHelp("?", "help"),
+			key.WithKeys("?", "h"),
+			key.WithHelp("?/h", "help"),
 		),
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
@@ -179,6 +189,18 @@ func DefaultKeyMap() KeyMap {
 		PushToBeta: key.NewBinding(
 			key.WithKeys("b"),
 			key.WithHelp("b", "push to beta"),
+		),
+		PullToAlpha: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "pull to alpha"),
+		),
+		ConfirmYes: key.NewBinding(
+			key.WithKeys("y", "Y"),
+			key.WithHelp("y", "confirm"),
+		),
+		ConfirmNo: key.NewBinding(
+			key.WithKeys("n", "N"),
+			key.WithHelp("n", "cancel"),
 		),
 		Escape: key.NewBinding(
 			key.WithKeys("esc"),
@@ -448,10 +470,52 @@ func (m Model) handleModalKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key.Matches(msg, keys.PushToBeta) && m.OnPushConflicts != nil {
-			m.ActiveModal = ModalNone // Close the modal
+			if m.ConfirmPushToBeta {
+				m.ActiveModal = ModalConfirmPush
+				return m, nil
+			}
+			// No confirmation needed - execute directly
+			m.ActiveModal = ModalNone
 			m.IsLoading = true
 			m.LoadingText = "Pushing to beta..."
 			return m, m.pushConflictsCmd()
+		}
+		if key.Matches(msg, keys.PullToAlpha) && m.OnPullConflicts != nil {
+			if m.ConfirmPullToAlpha {
+				m.ActiveModal = ModalConfirmPull
+				return m, nil
+			}
+			// No confirmation needed - execute directly
+			m.ActiveModal = ModalNone
+			m.IsLoading = true
+			m.LoadingText = "Pulling to alpha..."
+			return m, m.pullConflictsCmd()
+		}
+		return m, nil
+
+	case ModalConfirmPush:
+		if key.Matches(msg, keys.Escape) || key.Matches(msg, keys.ConfirmNo) {
+			m.ActiveModal = ModalConflicts // Go back to conflicts modal
+			return m, nil
+		}
+		if key.Matches(msg, keys.ConfirmYes) && m.OnPushConflicts != nil {
+			m.ActiveModal = ModalNone
+			m.IsLoading = true
+			m.LoadingText = "Pushing to beta..."
+			return m, m.pushConflictsCmd()
+		}
+		return m, nil
+
+	case ModalConfirmPull:
+		if key.Matches(msg, keys.Escape) || key.Matches(msg, keys.ConfirmNo) {
+			m.ActiveModal = ModalConflicts // Go back to conflicts modal
+			return m, nil
+		}
+		if key.Matches(msg, keys.ConfirmYes) && m.OnPullConflicts != nil {
+			m.ActiveModal = ModalNone
+			m.IsLoading = true
+			m.LoadingText = "Pulling to alpha..."
+			return m, m.pullConflictsCmd()
 		}
 		return m, nil
 
@@ -544,6 +608,17 @@ func (m Model) pushConflictsCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		status := m.OnPushConflicts(ctx)
+		if m.OnRefresh != nil {
+			m.OnRefresh(ctx)
+		}
+		return OperationDoneMsg{Status: status}
+	}
+}
+
+func (m Model) pullConflictsCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		status := m.OnPullConflicts(ctx)
 		if m.OnRefresh != nil {
 			m.OnRefresh(ctx)
 		}
@@ -972,6 +1047,10 @@ func (m Model) renderModal() string {
 		return m.renderConflictModal()
 	case ModalSyncStatus:
 		return m.renderSyncStatusModal()
+	case ModalConfirmPush:
+		return m.renderConfirmPushModal()
+	case ModalConfirmPull:
+		return m.renderConfirmPullModal()
 	}
 	return ""
 }
@@ -979,13 +1058,13 @@ func (m Model) renderModal() string {
 func (m Model) renderHelpModal() string {
 	content := m.Theme.ModalTitle.Render("NAVIGATION") + "\n"
 	content += "  ↑/k, ↓/j        Move selection up/down\n"
-	content += "  h/←, l/→/↵      Fold/unfold project\n"
+	content += "  ←, l/→/↵        Fold/unfold project\n"
 	content += "\n"
 	content += m.Theme.ModalTitle.Render("GLOBAL ACTIONS") + "\n"
 	content += "  r               Refresh session list\n"
 	content += "  m               Toggle display mode\n"
 	content += "  q, Ctrl-C       Quit application\n"
-	content += "  ?               Toggle this help screen\n"
+	content += "  ?/h             Toggle this help screen\n"
 	content += "\n"
 	content += m.Theme.ModalTitle.Render("PROJECT ACTIONS") + "\n"
 	content += "  e               Edit project configuration\n"
@@ -1030,8 +1109,9 @@ func (m Model) renderConflictModal() string {
 	}
 
 	var content strings.Builder
-	content.WriteString(m.Theme.HelpKey.Render("Press 'b' to push all conflicts to beta (alpha → beta copy)") + "\n")
-	content.WriteString("Press Esc or 'c' to close this view\n\n")
+	content.WriteString(m.Theme.ConflictAlpha.Render("'b'") + " " + m.Theme.ConflictAlpha.Render("α → β") + " push (overwrites beta)\n")
+	content.WriteString(m.Theme.ConflictBeta.Render("'a'") + " " + m.Theme.ConflictBeta.Render("α ← β") + " pull (overwrites alpha)\n")
+	content.WriteString(m.Theme.ModalHelp.Render("Esc/'c' to close") + "\n\n")
 
 	for _, sc := range conflicts {
 		if len(sc.Conflicts) == 0 {
@@ -1050,6 +1130,46 @@ func (m Model) renderConflictModal() string {
 	return m.Theme.ModalBorder.Render(
 		m.Theme.ModalTitle.Render(" Conflict Details ") + "\n\n" + content.String(),
 	)
+}
+
+func (m Model) renderConfirmPushModal() string {
+	var content strings.Builder
+
+	content.WriteString(m.Theme.ConfirmWarning.Render("⚠ CONFIRM PUSH TO BETA") + "\n\n")
+
+	// Get session paths if available
+	if m.GetSelectedSession != nil {
+		if session := m.GetSelectedSession(); session != nil {
+			content.WriteString("From: " + m.Theme.ConflictAlpha.Bold(true).Render(session.Alpha.DisplayPath()) + "\n")
+			content.WriteString("  To: " + m.Theme.ConflictBeta.Bold(true).Render(session.Beta.DisplayPath()) + "\n\n")
+		}
+	}
+
+	content.WriteString("This will " + m.Theme.ConfirmWarning.Render("OVERWRITE") + " files on beta with alpha versions.\n")
+	content.WriteString("This action cannot be undone.\n\n")
+	content.WriteString(m.Theme.ConflictAlpha.Bold(true).Render("'y'") + " Confirm  " + m.Theme.ModalHelp.Render("'n'/Esc") + " Cancel\n")
+
+	return m.Theme.ConfirmPushBorder.Render(content.String())
+}
+
+func (m Model) renderConfirmPullModal() string {
+	var content strings.Builder
+
+	content.WriteString(m.Theme.ConfirmWarning.Render("⚠ CONFIRM PULL TO ALPHA") + "\n\n")
+
+	// Get session paths if available
+	if m.GetSelectedSession != nil {
+		if session := m.GetSelectedSession(); session != nil {
+			content.WriteString("From: " + m.Theme.ConflictBeta.Bold(true).Render(session.Beta.DisplayPath()) + "\n")
+			content.WriteString("  To: " + m.Theme.ConflictAlpha.Bold(true).Render(session.Alpha.DisplayPath()) + "\n\n")
+		}
+	}
+
+	content.WriteString("This will " + m.Theme.ConfirmWarning.Render("OVERWRITE") + " files on alpha with beta versions.\n")
+	content.WriteString("This action cannot be undone.\n\n")
+	content.WriteString(m.Theme.ConflictBeta.Bold(true).Render("'y'") + " Confirm  " + m.Theme.ModalHelp.Render("'n'/Esc") + " Cancel\n")
+
+	return m.Theme.ConfirmPullBorder.Render(content.String())
 }
 
 func (m Model) appendConflictDetails(sb *strings.Builder, conflict mutagen.Conflict, session *mutagen.SyncSession) {

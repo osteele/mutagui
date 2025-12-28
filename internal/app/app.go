@@ -677,6 +677,74 @@ func (a *App) pushSpecConflictsToBeta(ctx context.Context, projIdx, specIdx int)
 	}
 }
 
+// PullConflictsToAlpha resolves conflicts by pulling beta changes to alpha.
+// This terminates the existing session and creates a one-way pull session.
+// Works for both spec-level and project-level selections.
+func (a *App) PullConflictsToAlpha(ctx context.Context) {
+	// Check if a spec is selected
+	projIdx, specIdx := a.GetSelectedSpec()
+	if projIdx >= 0 && specIdx >= 0 {
+		// Single spec selected - pull just that spec
+		a.pullSpecConflictsToAlpha(ctx, projIdx, specIdx)
+		return
+	}
+
+	// Check if a project is selected
+	projIdx = a.GetSelectedProjectIndex()
+	if projIdx < 0 || projIdx >= len(a.State.Projects) {
+		a.SetStatus(ui.StatusWarning, "No project or spec selected")
+		return
+	}
+
+	// Project selected - pull all specs with conflicts
+	proj := a.State.Projects[projIdx]
+	pulled := 0
+	for i := range proj.Specs {
+		spec := &proj.Specs[i]
+		if spec.RunningSession != nil && spec.RunningSession.HasConflicts() {
+			a.pullSpecConflictsToAlpha(ctx, projIdx, i)
+			pulled++
+		}
+	}
+
+	if pulled == 0 {
+		a.SetStatus(ui.StatusWarning, "No conflicts to resolve")
+	} else {
+		a.SetStatus(ui.StatusInfo, fmt.Sprintf("Created pull sessions for %d spec(s)", pulled))
+	}
+}
+
+// pullSpecConflictsToAlpha handles pulling a single spec's conflicts to alpha.
+func (a *App) pullSpecConflictsToAlpha(ctx context.Context, projIdx, specIdx int) {
+	proj := a.State.Projects[projIdx]
+	spec := &proj.Specs[specIdx]
+	sessionDef, exists := proj.File.Sessions[spec.Name]
+	if !exists {
+		a.SetStatus(ui.StatusError, "Session definition not found for "+spec.Name)
+		return
+	}
+
+	// Terminate any existing sessions with this name to avoid duplicates
+	_ = a.Client.TerminateSession(ctx, spec.Name)
+
+	// Prepare endpoint directories
+	if err := prepareEndpoints(ctx, sessionDef.Alpha, sessionDef.Beta); err != nil {
+		a.SetStatus(ui.StatusError, "Failed to prepare endpoints: "+err.Error())
+		return
+	}
+
+	// Build session options from session definition and project defaults
+	opts := buildSessionOptions(&sessionDef, proj.File.Defaults)
+
+	// Create a one-way pull session to overwrite alpha with beta
+	// Note: For pull, we swap alpha and beta in the CreatePushSession call
+	// This creates a one-way-replica from beta to alpha
+	if err := a.Client.CreatePushSession(ctx, spec.Name, sessionDef.Beta, sessionDef.Alpha, opts); err != nil {
+		a.SetStatus(ui.StatusError, "Failed to create pull session: "+err.Error())
+		return
+	}
+}
+
 // GetEditor returns the configured editor from environment variables.
 func GetEditor() string {
 	if editor := os.Getenv("VISUAL"); editor != "" {

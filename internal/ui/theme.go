@@ -53,6 +53,11 @@ type Theme struct {
 	// Conflict modal
 	ConflictAlpha lipgloss.Style
 	ConflictBeta  lipgloss.Style
+
+	// Confirmation modal
+	ConfirmPushBorder lipgloss.Style
+	ConfirmPullBorder lipgloss.Style
+	ConfirmWarning    lipgloss.Style
 }
 
 // DarkTheme returns a theme for dark terminals.
@@ -94,6 +99,10 @@ func DarkTheme() Theme {
 
 		ConflictAlpha: lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
 		ConflictBeta:  lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+
+		ConfirmPushBorder: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("12")).Padding(1, 2), // Blue border
+		ConfirmPullBorder: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("13")).Padding(1, 2), // Magenta border
+		ConfirmWarning:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")),                                           // Yellow
 	}
 }
 
@@ -136,6 +145,10 @@ func LightTheme() Theme {
 
 		ConflictAlpha: lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		ConflictBeta:  lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+
+		ConfirmPushBorder: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("4")).Padding(1, 2), // Blue border
+		ConfirmPullBorder: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("5")).Padding(1, 2), // Purple border
+		ConfirmWarning:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")),                                           // Red
 	}
 }
 
